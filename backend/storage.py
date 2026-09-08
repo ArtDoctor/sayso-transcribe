@@ -204,13 +204,17 @@ class StorageManager:
                 if not current or current.get("status") not in ("recording", "processing_hq"):
                     continue
                 previous = current["status"]
-                current["status"] = "hq_error"
+                current["status"] = "interrupted"
                 current["status_error"] = (
-                    "Recording was interrupted when Sayso closed. Any captured audio was preserved."
+                    "Recording was closed abruptly. Preserved audio and partial transcript."
                     if previous == "recording"
                     else "Transcription was interrupted when Sayso closed. Select Re-transcribe to retry."
                 )
                 current["hq_job_id"] = None
+                if not current.get("final_transcript") and current.get("phrases"):
+                    current["final_transcript"] = "\n".join(
+                        p.get("text", "") for p in current["phrases"] if p.get("text")
+                    )
                 self._save_and_export(session_id, current)
                 recovered += 1
         return recovered

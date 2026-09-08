@@ -48,8 +48,10 @@ const vadBar3 = document.getElementById("vad-bar-3") as HTMLElement;
 const systemVadBar1 = document.getElementById("system-vad-bar-1") as HTMLElement;
 const systemVadBar2 = document.getElementById("system-vad-bar-2") as HTMLElement;
 const systemVadBar3 = document.getElementById("system-vad-bar-3") as HTMLElement;
-const badgeMicSpeech = document.getElementById("badge-mic-speech") as HTMLElement;
-const badgeSystemSpeech = document.getElementById("badge-system-speech") as HTMLElement;
+const splashScreen = document.getElementById("splash-screen") as HTMLElement | null;
+const splashStatusText = document.getElementById("splash-status-text") as HTMLElement | null;
+const labelMic = document.getElementById("label-mic") as HTMLElement | null;
+const labelSystem = document.getElementById("label-system") as HTMLElement | null;
 const meterCardSystem = document.getElementById("meter-card-system") as HTMLElement;
 const livePhrasesList = document.getElementById("live-phrases-list") as HTMLElement;
 const emptyPhrasesHint = document.getElementById("empty-phrases-hint") as HTMLElement;
@@ -127,7 +129,24 @@ let deletingSessionId: string | null = null;
 
 let currentSessionId: string | null = null;
 let activeViewingSession: RecordingSession | null = null;
+let lastEditedTranscriptSource: "final_transcript" | "phrases" | null = null;
 const livePhraseCards = new Map<string, HTMLElement>();
+
+let activeSpeakingCardYou: HTMLElement | null = null;
+let activeSpeakingCardThem: HTMLElement | null = null;
+let speakingCardTimerYou: number | null = null;
+let speakingCardTimerThem: number | null = null;
+let splashDismissed = false;
+
+function dismissSplashScreen() {
+  if (splashDismissed || !splashScreen) return;
+  splashDismissed = true;
+  if (splashStatusText) splashStatusText.textContent = "Ready!";
+  splashScreen.classList.add("fade-out");
+  window.setTimeout(() => {
+    splashScreen.classList.add("hidden");
+  }, 450);
+}
 
 // Initialize Application
 async function initApp() {
@@ -148,6 +167,7 @@ async function initApp() {
       await refreshStatus();
       await refreshDevices();
       await refreshHistory();
+      dismissSplashScreen();
     },
     () => {
       backendOnline = false;
@@ -163,6 +183,7 @@ async function initApp() {
   await refreshStatus();
   await refreshDevices();
   await refreshHistory();
+  if (backendOnline) dismissSplashScreen();
 
   // Poll as a fallback for missed WebSocket events. Never overlap slow polls.
   window.setInterval(async () => {
@@ -233,12 +254,81 @@ function handleVadMeter(payload: any) {
   const isSystemSpeaking = !!payload.system?.is_speaking;
 
   updateVadBars([vadBar1, vadBar2, vadBar3], micRms, isMicSpeaking);
-  badgeMicSpeech.className = isMicSpeaking ? "speech-state speaking" : "speech-state";
-  badgeMicSpeech.textContent = isMicSpeaking ? "VOICE" : "SILENT";
+  if (labelMic) labelMic.classList.toggle("speaking", isMicSpeaking);
 
   updateVadBars([systemVadBar1, systemVadBar2, systemVadBar3], systemRms, isSystemSpeaking);
-  badgeSystemSpeech.className = isSystemSpeaking ? "speech-state speaking" : "speech-state";
-  badgeSystemSpeech.textContent = isSystemSpeaking ? "VOICE" : "SILENT";
+  if (labelSystem) labelSystem.classList.toggle("speaking", isSystemSpeaking);
+
+  manageSpeakingSkeleton("You", isMicSpeaking);
+  manageSpeakingSkeleton("Them", isSystemSpeaking);
+}
+
+function manageSpeakingSkeleton(speaker: "You" | "Them", isSpeaking: boolean) {
+  if (speaker === "You") {
+    if (isSpeaking) {
+      if (speakingCardTimerYou) {
+        window.clearTimeout(speakingCardTimerYou);
+        speakingCardTimerYou = null;
+      }
+      if (!activeSpeakingCardYou) {
+        activeSpeakingCardYou = createSpeakingSkeletonCard("You");
+        emptyPhrasesHint.classList.add("hidden");
+        livePhrasesList.prepend(activeSpeakingCardYou);
+        scrollLivePhrasesToTop();
+      }
+    } else if (activeSpeakingCardYou && !speakingCardTimerYou) {
+      speakingCardTimerYou = window.setTimeout(() => {
+        if (activeSpeakingCardYou) {
+          activeSpeakingCardYou.remove();
+          activeSpeakingCardYou = null;
+          if (livePhraseCards.size === 0 && !activeSpeakingCardThem) {
+            emptyPhrasesHint.classList.remove("hidden");
+          }
+        }
+        speakingCardTimerYou = null;
+      }, 2500);
+    }
+  } else {
+    if (isSpeaking) {
+      if (speakingCardTimerThem) {
+        window.clearTimeout(speakingCardTimerThem);
+        speakingCardTimerThem = null;
+      }
+      if (!activeSpeakingCardThem) {
+        activeSpeakingCardThem = createSpeakingSkeletonCard("Them");
+        emptyPhrasesHint.classList.add("hidden");
+        livePhrasesList.prepend(activeSpeakingCardThem);
+        scrollLivePhrasesToTop();
+      }
+    } else if (activeSpeakingCardThem && !speakingCardTimerThem) {
+      speakingCardTimerThem = window.setTimeout(() => {
+        if (activeSpeakingCardThem) {
+          activeSpeakingCardThem.remove();
+          activeSpeakingCardThem = null;
+          if (livePhraseCards.size === 0 && !activeSpeakingCardYou) {
+            emptyPhrasesHint.classList.remove("hidden");
+          }
+        }
+        speakingCardTimerThem = null;
+      }, 2500);
+    }
+  }
+}
+
+function createSpeakingSkeletonCard(speaker: "You" | "Them"): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "phrase-card phrase-card-skeleton live-speaking-skeleton";
+  card.dataset.speaker = speaker;
+  card.setAttribute("aria-busy", "true");
+  card.setAttribute("aria-label", `${speaker} speech detected`);
+  card.innerHTML = `
+    <span class="phrase-speaker">${speaker}:</span>
+    <span class="phrase-skeleton-text" aria-hidden="true">
+      <span class="phrase-skeleton-line" style="width: 78%"></span>
+      <span class="phrase-skeleton-line" style="width: 48%"></span>
+    </span>
+  `;
+  return card;
 }
 
 function speakerLabelForPhrase(phrase: Phrase): string {
@@ -246,9 +336,9 @@ function speakerLabelForPhrase(phrase: Phrase): string {
   return ["system audio", "system / remote", "system", "remote", "them"].includes(speaker) ? "Them" : "You";
 }
 
-function scrollLivePhrasesToBottom() {
+function scrollLivePhrasesToTop() {
   window.requestAnimationFrame(() => {
-    livePhrasesList.scrollTo({ top: livePhrasesList.scrollHeight, behavior: "smooth" });
+    livePhrasesList.scrollTo({ top: 0, behavior: "smooth" });
   });
 }
 
@@ -259,11 +349,34 @@ function handlePhrasePending(phrase: Phrase) {
   // WebSocket reconnects can deliver an event more than once; keep one row per phrase.
   if (livePhraseCards.has(phrase.phrase_id)) return;
 
-  const phraseCard = document.createElement("div");
-  phraseCard.className = "phrase-card phrase-card-skeleton";
+  const speaker = speakerLabelForPhrase(phrase);
+  let phraseCard: HTMLElement;
+
+  if (speaker === "You" && activeSpeakingCardYou) {
+    phraseCard = activeSpeakingCardYou;
+    activeSpeakingCardYou = null;
+    if (speakingCardTimerYou) {
+      window.clearTimeout(speakingCardTimerYou);
+      speakingCardTimerYou = null;
+    }
+    phraseCard.classList.remove("live-speaking-skeleton");
+  } else if (speaker === "Them" && activeSpeakingCardThem) {
+    phraseCard = activeSpeakingCardThem;
+    activeSpeakingCardThem = null;
+    if (speakingCardTimerThem) {
+      window.clearTimeout(speakingCardTimerThem);
+      speakingCardTimerThem = null;
+    }
+    phraseCard.classList.remove("live-speaking-skeleton");
+  } else {
+    phraseCard = document.createElement("div");
+    phraseCard.className = "phrase-card phrase-card-skeleton";
+    livePhrasesList.prepend(phraseCard);
+  }
+
   phraseCard.dataset.phraseId = phrase.phrase_id;
   phraseCard.setAttribute("aria-busy", "true");
-  phraseCard.setAttribute("aria-label", `${speakerLabelForPhrase(phrase)} phrase is being transcribed`);
+  phraseCard.setAttribute("aria-label", `${speaker} phrase is being transcribed`);
 
   const duration = Math.max(0.5, Number(phrase.duration) || 0.5);
   const lineCount = duration >= 3.5 ? 3 : 2;
@@ -272,13 +385,12 @@ function handlePhrasePending(phrase: Phrase) {
     .map((width) => `<span class="phrase-skeleton-line" style="width: ${width}"></span>`)
     .join("");
   phraseCard.innerHTML = `
-    <span class="phrase-speaker">${escapeHtml(speakerLabelForPhrase(phrase))}:</span>
+    <span class="phrase-speaker">${escapeHtml(speaker)}:</span>
     <span class="phrase-skeleton-text" aria-hidden="true">${skeletonLines}</span>
   `;
 
   livePhraseCards.set(phrase.phrase_id, phraseCard);
-  livePhrasesList.appendChild(phraseCard);
-  scrollLivePhrasesToBottom();
+  scrollLivePhrasesToTop();
 }
 
 function handlePhraseTranscribed(phrase: Phrase) {
@@ -286,21 +398,47 @@ function handlePhraseTranscribed(phrase: Phrase) {
   emptyPhrasesHint.classList.add("hidden");
 
   if (phrase.error) showMessage(`A speech segment could not be transcribed: ${phrase.error}`, true);
-  const phraseCard = livePhraseCards.get(phrase.phrase_id) || document.createElement("div");
+
+  const speaker = speakerLabelForPhrase(phrase);
+  let phraseCard = livePhraseCards.get(phrase.phrase_id);
+
+  if (!phraseCard) {
+    if (speaker === "You" && activeSpeakingCardYou) {
+      phraseCard = activeSpeakingCardYou;
+      activeSpeakingCardYou = null;
+      if (speakingCardTimerYou) {
+        window.clearTimeout(speakingCardTimerYou);
+        speakingCardTimerYou = null;
+      }
+      phraseCard.classList.remove("live-speaking-skeleton");
+    } else if (speaker === "Them" && activeSpeakingCardThem) {
+      phraseCard = activeSpeakingCardThem;
+      activeSpeakingCardThem = null;
+      if (speakingCardTimerThem) {
+        window.clearTimeout(speakingCardTimerThem);
+        speakingCardTimerThem = null;
+      }
+      phraseCard.classList.remove("live-speaking-skeleton");
+    } else {
+      phraseCard = document.createElement("div");
+      livePhrasesList.prepend(phraseCard);
+    }
+  }
+
   const wasPending = phraseCard.classList.contains("phrase-card-skeleton");
   phraseCard.className = `phrase-card${phrase.error ? " error" : ""}`;
   phraseCard.dataset.phraseId = phrase.phrase_id;
   phraseCard.removeAttribute("aria-busy");
-  phraseCard.setAttribute("aria-label", `${speakerLabelForPhrase(phrase)}: ${phrase.text || "This segment could not be transcribed."}`);
+  phraseCard.setAttribute("aria-label", `${speaker}: ${phrase.text || "This segment could not be transcribed."}`);
 
   phraseCard.innerHTML = `
-    <span class="phrase-speaker">${escapeHtml(speakerLabelForPhrase(phrase))}:</span>
+    <span class="phrase-speaker">${escapeHtml(speaker)}:</span>
     <span class="phrase-text${wasPending ? " phrase-text-revealed" : ""}">${escapeHtml(phrase.text || "This segment could not be transcribed.")}</span>
   `;
 
-  if (!phraseCard.parentElement) livePhrasesList.appendChild(phraseCard);
+  if (!phraseCard.parentElement) livePhrasesList.prepend(phraseCard);
   livePhraseCards.set(phrase.phrase_id, phraseCard);
-  scrollLivePhrasesToBottom();
+  scrollLivePhrasesToTop();
 }
 
 function showRecordingError(error: string) {
@@ -783,6 +921,10 @@ function enterRecording(modeLabel: string, resetPhrases: boolean, elapsedSeconds
     livePhrasesList.innerHTML = "";
     emptyPhrasesHint.classList.remove("hidden");
     livePhrasesList.appendChild(emptyPhrasesHint);
+    if (activeSpeakingCardYou) { activeSpeakingCardYou.remove(); activeSpeakingCardYou = null; }
+    if (activeSpeakingCardThem) { activeSpeakingCardThem.remove(); activeSpeakingCardThem = null; }
+    if (speakingCardTimerYou) { clearTimeout(speakingCardTimerYou); speakingCardTimerYou = null; }
+    if (speakingCardTimerThem) { clearTimeout(speakingCardTimerThem); speakingCardTimerThem = null; }
   }
   recordingStartTime = Date.now() - Math.max(0, elapsedSeconds) * 1000;
   updateTimerDisplay();
@@ -801,6 +943,12 @@ function leaveRecording() {
   activeRecordingScreen.classList.add("hidden");
   idleScreen.classList.remove("hidden");
   livePhraseCards.clear();
+  if (activeSpeakingCardYou) { activeSpeakingCardYou.remove(); activeSpeakingCardYou = null; }
+  if (activeSpeakingCardThem) { activeSpeakingCardThem.remove(); activeSpeakingCardThem = null; }
+  if (speakingCardTimerYou) { clearTimeout(speakingCardTimerYou); speakingCardTimerYou = null; }
+  if (speakingCardTimerThem) { clearTimeout(speakingCardTimerThem); speakingCardTimerThem = null; }
+  if (labelMic) labelMic.classList.remove("speaking");
+  if (labelSystem) labelSystem.classList.remove("speaking");
   updateVadBars([vadBar1, vadBar2, vadBar3], 0, false);
   updateVadBars([systemVadBar1, systemVadBar2, systemVadBar3], 0, false);
   btnStopRecording.disabled = false;
@@ -882,12 +1030,19 @@ async function refreshHistory() {
       item.className = `session-item ${activeViewingSession?.id === s.id ? "active" : ""}`;
       item.dataset.id = s.id;
 
-      const statusLabel = s.status === "processing_hq" ? "Transcribing" : s.status === "hq_error" ? "Needs retry" : "";
+      const statusLabel = s.status === "processing_hq"
+        ? "Transcribing"
+        : s.status === "hq_error"
+          ? "Needs retry"
+          : s.status === "interrupted"
+            ? "Interrupted"
+            : "";
+      const statusClass = s.status === "hq_error" ? "error" : s.status === "interrupted" ? "warn" : "";
       item.innerHTML = `
         <div class="session-item-title">${escapeHtml(s.title || "Untitled Meeting")}</div>
         <div class="session-item-sub">
           <span>${formatDate(s.created_at)}</span>
-          <span>${statusLabel ? `<span class="session-item-status ${s.status === "hq_error" ? "error" : ""}">${statusLabel}</span>` : formatSeconds(s.duration || 0)}</span>
+          <span>${statusLabel ? `<span class="session-item-status ${statusClass}">${statusLabel}</span>` : formatSeconds(s.duration || 0)}</span>
         </div>
       `;
 
@@ -907,18 +1062,56 @@ async function refreshHistory() {
 function renderSessionProcessingState(session: RecordingSession) {
   const processing = session.status === "processing_hq";
   const failed = session.status === "hq_error";
+  const interrupted = session.status === "interrupted";
+  const completed = session.status === "completed";
+
   finalTranscriptCard.classList.remove("hidden");
   const startingRetranscription = retranscribeRequestInFlight;
   finalTranscriptCard.classList.toggle("processing", processing || startingRetranscription);
   finalTranscriptText.disabled = processing || transcriptSavingSessionId === session.id;
-  transcriptHqStatus.textContent = processing ? "Processing HQ…" : failed ? "HQ failed" : "HQ complete";
-  transcriptHqStatus.classList.toggle("error", failed);
-  transcriptHqStatus.classList.toggle("processing", processing);
 
-  const canRetranscribe = !processing && !startingRetranscription && !isRecording && recordingOperation === "idle" && backendOnline && modelCanRecord();
-  btnRetranscribe.disabled = !canRetranscribe;
-  btnRetranscribe.textContent = startingRetranscription ? "Starting…" : processing ? "Transcribing…" : failed ? "Retry transcription" : "Re-transcribe";
-  btnRetranscribe.title = startingRetranscription ? "Starting the high-quality pass" : processing ? "A high-quality pass is already running" : isRecording ? "Stop the active recording before re-transcribing" : !backendOnline ? "Backend is offline" : !modelCanRecord() ? "Download the model before transcribing" : "Run a new high-quality transcription pass";
+  transcriptHqStatus.classList.remove("error", "warn", "processing");
+  if (processing) {
+    transcriptHqStatus.textContent = "Processing HQ…";
+    transcriptHqStatus.classList.add("processing");
+  } else if (failed) {
+    transcriptHqStatus.textContent = "HQ failed";
+    transcriptHqStatus.classList.add("error");
+  } else if (interrupted) {
+    transcriptHqStatus.textContent = "Closed abruptly";
+    transcriptHqStatus.classList.add("warn");
+  } else {
+    transcriptHqStatus.textContent = "HQ complete";
+  }
+
+  // Only show re-transcribe button when useful: hide if completed normally
+  if (completed && !failed && !interrupted) {
+    btnRetranscribe.classList.add("hidden");
+  } else {
+    btnRetranscribe.classList.remove("hidden");
+    const canRetranscribe = !processing && !startingRetranscription && !isRecording && recordingOperation === "idle" && backendOnline && modelCanRecord();
+    btnRetranscribe.disabled = !canRetranscribe;
+    btnRetranscribe.textContent = startingRetranscription
+      ? "Starting…"
+      : processing
+        ? "Transcribing…"
+        : failed
+          ? "Retry transcription"
+          : interrupted
+            ? "Transcribe recording"
+            : "Re-transcribe";
+    btnRetranscribe.title = startingRetranscription
+      ? "Starting the high-quality pass"
+      : processing
+        ? "A high-quality pass is already running"
+        : isRecording
+          ? "Stop the active recording before re-transcribing"
+          : !backendOnline
+            ? "Backend is offline"
+            : !modelCanRecord()
+              ? "Download the model before transcribing"
+              : "Run high-quality transcription pass";
+  }
   btnDeleteSession.disabled = deletingSessionId !== null || session.status === "recording" || processing;
 }
 
@@ -932,6 +1125,7 @@ async function selectSession(sessionId: string) {
     const session = await api.getRecording(sessionId);
     if (requestGeneration !== sessionRequestGeneration) return;
     activeViewingSession = session;
+    lastEditedTranscriptSource = null;
 
     // Highlight in list
     document.querySelectorAll(".session-item").forEach((el) => {
@@ -949,7 +1143,11 @@ async function selectSession(sessionId: string) {
     // Keep the transcript visible throughout processing and failures.
     finalTranscriptText.value = session.final_transcript || "";
     renderSessionProcessingState(session);
-    if (session.status === "hq_error" && session.status_error) showMessage(`Final transcription failed: ${session.status_error}`, true);
+    if (session.status === "hq_error" && session.status_error) {
+      showMessage(`Final transcription failed: ${session.status_error}`, true);
+    } else if (session.status === "interrupted") {
+      showMessage("This recording was closed abruptly. Preserved audio and partial transcript are available.");
+    }
 
     // Set audio player source
     audioElement.src = api.getAudioUrl(session.id);
@@ -1011,16 +1209,18 @@ function renderInteractivePhrases(session: RecordingSession) {
     textarea.addEventListener("input", autoResize);
     window.requestAnimationFrame(autoResize);
 
-    // In-place phrase edit on change or blur
+    // In-place phrase edit on input, blur, and change
     let lastSavedText = phrase.text;
+    let phraseDebounceTimer: number | null = null;
+
     const savePhrase = async () => {
       if (!activeViewingSession || activeViewingSession.id !== session.id) return;
-      const newText = textarea.value.trim();
+      const newText = textarea.value;
       if (newText === lastSavedText) return;
       const previous = session.phrases[idx].text;
       session.phrases[idx].text = newText;
       lastSavedText = newText;
-      textarea.disabled = true;
+      lastEditedTranscriptSource = "phrases";
       try {
         await api.updateRecording(session.id, { phrases: session.phrases });
         showMessage("Phrase saved.");
@@ -1030,12 +1230,33 @@ function renderInteractivePhrases(session: RecordingSession) {
         lastSavedText = previous;
         autoResize();
         showMessage(`Phrase was not saved: ${error.message}`, true);
-      } finally {
-        textarea.disabled = false;
       }
     };
 
-    textarea.addEventListener("change", savePhrase);
+    textarea.addEventListener("input", () => {
+      autoResize();
+      if (!activeViewingSession || activeViewingSession.id !== session.id) return;
+      session.phrases[idx].text = textarea.value;
+      lastEditedTranscriptSource = "phrases";
+      if (phraseDebounceTimer) window.clearTimeout(phraseDebounceTimer);
+      phraseDebounceTimer = window.setTimeout(savePhrase, 600);
+    });
+
+    textarea.addEventListener("blur", () => {
+      if (phraseDebounceTimer) {
+        window.clearTimeout(phraseDebounceTimer);
+        phraseDebounceTimer = null;
+      }
+      void savePhrase();
+    });
+
+    textarea.addEventListener("change", () => {
+      if (phraseDebounceTimer) {
+        window.clearTimeout(phraseDebounceTimer);
+        phraseDebounceTimer = null;
+      }
+      void savePhrase();
+    });
 
     interactivePhrasesContainer.appendChild(row);
   });
@@ -1171,30 +1392,89 @@ function setupHistoryActions() {
     }
   });
 
-  finalTranscriptText.addEventListener("change", async () => {
-    if (!activeViewingSession || finalTranscriptText.disabled) return;
+  function getCurrentTranscriptToCopy(): string {
+    if (!activeViewingSession) return "";
+
+    // 1. Immediately sync whatever is currently in the DOM
+    if (finalTranscriptText) {
+      activeViewingSession.final_transcript = finalTranscriptText.value;
+    }
+
+    const phraseTextareas = interactivePhrasesContainer.querySelectorAll<HTMLTextAreaElement>(".phrase-text-input");
+    phraseTextareas.forEach((ta, i) => {
+      if (activeViewingSession?.phrases && activeViewingSession.phrases[i]) {
+        activeViewingSession.phrases[i].text = ta.value;
+      }
+    });
+
+    // 2. Determine what to copy based on what the user edited or what is available
+    if (lastEditedTranscriptSource === "phrases" && activeViewingSession.phrases && activeViewingSession.phrases.length > 0) {
+      return activeViewingSession.phrases.map((p) => `${speakerLabelForPhrase(p)}: ${p.text}`).join("\n");
+    }
+
+    if (activeViewingSession.final_transcript && activeViewingSession.final_transcript.trim()) {
+      return activeViewingSession.final_transcript.trim();
+    }
+
+    if (activeViewingSession.phrases && activeViewingSession.phrases.length > 0) {
+      return activeViewingSession.phrases.map((p) => `${speakerLabelForPhrase(p)}: ${p.text}`).join("\n");
+    }
+
+    return "";
+  }
+
+  let finalTranscriptDebounceTimer: number | null = null;
+  const saveFinalTranscriptNow = async () => {
+    if (!activeViewingSession) return;
     const session = activeViewingSession;
+    const newText = finalTranscriptText.value;
+    if (session.final_transcript === newText && !transcriptSavingSessionId) return;
     const previous = session.final_transcript;
+    session.final_transcript = newText;
+    lastEditedTranscriptSource = "final_transcript";
     transcriptSavingSessionId = session.id;
-    finalTranscriptText.disabled = true;
     try {
-      await api.updateRecording(session.id, { final_transcript: finalTranscriptText.value });
-      session.final_transcript = finalTranscriptText.value;
+      await api.updateRecording(session.id, { final_transcript: newText });
       showMessage("Transcript saved.");
     } catch (error: any) {
-      if (activeViewingSession?.id === session.id) finalTranscriptText.value = previous;
+      if (activeViewingSession?.id === session.id) {
+        session.final_transcript = previous;
+        finalTranscriptText.value = previous;
+      }
       showMessage(`Transcript was not saved: ${error.message}`, true);
     } finally {
       if (transcriptSavingSessionId === session.id) transcriptSavingSessionId = null;
       if (activeViewingSession?.id === session.id) renderSessionProcessingState(session);
     }
+  };
+
+  finalTranscriptText.addEventListener("input", () => {
+    if (!activeViewingSession) return;
+    activeViewingSession.final_transcript = finalTranscriptText.value;
+    lastEditedTranscriptSource = "final_transcript";
+    if (finalTranscriptDebounceTimer) window.clearTimeout(finalTranscriptDebounceTimer);
+    finalTranscriptDebounceTimer = window.setTimeout(saveFinalTranscriptNow, 600);
+  });
+
+  finalTranscriptText.addEventListener("blur", () => {
+    if (finalTranscriptDebounceTimer) {
+      window.clearTimeout(finalTranscriptDebounceTimer);
+      finalTranscriptDebounceTimer = null;
+    }
+    void saveFinalTranscriptNow();
+  });
+
+  finalTranscriptText.addEventListener("change", () => {
+    if (finalTranscriptDebounceTimer) {
+      window.clearTimeout(finalTranscriptDebounceTimer);
+      finalTranscriptDebounceTimer = null;
+    }
+    void saveFinalTranscriptNow();
   });
 
   btnCopyTranscript.addEventListener("click", async () => {
     if (!activeViewingSession) return;
-    const text = activeViewingSession.final_transcript
-      ? activeViewingSession.final_transcript
-      : (activeViewingSession.phrases || []).map((p) => `${speakerLabelForPhrase(p)}: ${p.text}`).join("\n");
+    const text = getCurrentTranscriptToCopy();
     if (!text.trim()) {
       showMessage("There is no transcript to copy yet.", true);
       return;
@@ -1210,6 +1490,7 @@ function setupHistoryActions() {
 
   btnDownloadTxt.addEventListener("click", () => {
     if (!activeViewingSession) return;
+    getCurrentTranscriptToCopy();
     let text = `Title: ${activeViewingSession.title}\nDate: ${activeViewingSession.created_at}\nDuration: ${formatSeconds(activeViewingSession.duration || 0)}\n\n`;
     if (activeViewingSession.final_transcript) {
       text += `--- Full Transcript ---\n${activeViewingSession.final_transcript}\n\n`;
@@ -1222,8 +1503,9 @@ function setupHistoryActions() {
 
   btnDownloadSrt.addEventListener("click", () => {
     if (!activeViewingSession) return;
+    getCurrentTranscriptToCopy();
     const srtContent = (activeViewingSession.phrases || [])
-      .map((p, i) => `${i + 1}\n${toSrtTime(p.start_time)} --> ${toSrtTime(p.end_time)}\n${p.text}\n`)
+      .map((p, i) => `${i + 1}\n${toSrtTime(p.start_time)} --> ${toSrtTime(p.end_time)}\n${speakerLabelForPhrase(p)}: ${p.text}\n`)
       .join("\n");
     downloadFile(`${activeViewingSession.id}.srt`, srtContent, "text/plain");
   });

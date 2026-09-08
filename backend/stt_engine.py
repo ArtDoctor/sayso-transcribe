@@ -104,9 +104,12 @@ class STTEngine:
 
     def get_cached_model_path(self) -> Optional[str]:
         """Return path to cached snapshot directory if all required files exist locally."""
+        from pathlib import Path
+        import os
+
+        # 1. Check current configured HF cache
         try:
             from huggingface_hub import try_to_load_from_cache
-            from pathlib import Path
             config_path = try_to_load_from_cache(COHERE_MODEL_ID, "config.json")
             if isinstance(config_path, str):
                 snapshot_dir = Path(config_path).parent
@@ -114,6 +117,34 @@ class STTEngine:
                     return str(snapshot_dir)
         except Exception:
             pass
+
+        # 2. Check default user HF cache (e.g. ~/.cache/huggingface/hub)
+        try:
+            from huggingface_hub.constants import HUGGINGFACE_HUB_CACHE
+            from huggingface_hub import try_to_load_from_cache
+            config_path = try_to_load_from_cache(COHERE_MODEL_ID, "config.json", cache_dir=HUGGINGFACE_HUB_CACHE)
+            if isinstance(config_path, str):
+                snapshot_dir = Path(config_path).parent
+                if all((snapshot_dir / f).exists() for f in self.REQUIRED_FILES):
+                    return str(snapshot_dir)
+        except Exception:
+            pass
+
+        # 3. Direct inspection of standard user cache snapshot directory
+        try:
+            repo_folder = f"models--{COHERE_MODEL_ID.replace('/', '--')}"
+            candidate_dirs = [
+                Path.home() / ".cache" / "huggingface" / "hub" / repo_folder / "snapshots",
+                Path(os.environ.get("USERPROFILE", "")) / ".cache" / "huggingface" / "hub" / repo_folder / "snapshots",
+            ]
+            for cand in candidate_dirs:
+                if cand.is_dir():
+                    for snap in cand.iterdir():
+                        if snap.is_dir() and all((snap / f).exists() for f in self.REQUIRED_FILES):
+                            return str(snap)
+        except Exception:
+            pass
+
         return None
 
     def is_model_downloaded(self) -> bool:
@@ -158,9 +189,10 @@ class STTEngine:
 
             engine_self = self
 
+            hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
             for fname in self.REQUIRED_FILES:
                 # If file is already cached, skip downloading
-                cached_file = try_to_load_from_cache(COHERE_MODEL_ID, fname)
+                cached_file = try_to_load_from_cache(COHERE_MODEL_ID, fname, token=hf_token)
                 if isinstance(cached_file, str):
                     logger.info(f"Model file '{fname}' already cached at {cached_file}")
                     continue
@@ -208,6 +240,7 @@ class STTEngine:
                     repo_id=COHERE_MODEL_ID,
                     filename=fname,
                     tqdm_class=ProgressTracker,
+                    token=hf_token,
                 )
 
             logger.info("Model download finished! Now loading into memory...")

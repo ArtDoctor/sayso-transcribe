@@ -63,11 +63,24 @@ sayso/ (transcriber)
   - Yellow (`.status-warn`): model loading, downloading, or transcribing.
   - Red (`.status-bad` / `.status-offline`): backend offline or model error / not downloaded.
   - Clicking opens `#diagnostics-popover` detailing backend connectivity, model status, compute device (CUDA / CPU), selected audio inputs, and active session.
-- **3-Bar VAD Visualizer**: Replaced horizontal progress meters with matching 3 white vertical bars for microphone (`#vad-bar-1..3`) and computer/system audio (`#system-vad-bar-1..3`) that smoothly expand upward when speech is detected and contract down to 4px when silent.
-- **Phrase Presentation & Auto-Save**:
+- **3-Bar VAD Visualizer & Glowing Labels**: Replaced text status pills with matching 3 white vertical bars for microphone (`#vad-bar-1..3`) and computer/system audio (`#system-vad-bar-1..3`) that smoothly expand upward when speech is detected and contract down to 4px when silent. Labels (`#label-mic` and `#label-system`) glow bright white with text-shadow when voice is actively detected.
+- **Instant Speaking Skeleton & Top-First Transcript Stream**:
+  - Voice activity detection instantly displays an animated speaking placeholder row (`.live-speaking-skeleton`) at the top of the transcript list as soon as speech begins.
+  - When the speech segment finishes, `phrase_pending` smoothly adopts the active skeleton without layout shifts, and `phrase_transcribed` reveals the final text in place.
+  - Live transcripts are prepended (`.prepend()`) to the top of the stream so the latest words are immediately visible without manual scrolling.
+- **Phrase Presentation, Live Editing & Clipboard Sync**:
   - Live phrases during recording display as clean `You: <phrase>` or `Them: <phrase>` rows without timestamps; microphone audio is `You` and computer/system audio is `Them`.
   - History transcript displays as a continuous list of phrases (`[timestamp] You: phrase`) without card borders, with auto-resizing textareas that expand naturally without nested scrollbars.
-  - Session title editing auto-saves immediately on blur and debounced (600ms) on typing, without requiring an explicit Save button.
+  - Session title, full transcript, and individual phrases all support live in-memory synchronization on `input` keystrokes plus debounced (600ms) background auto-saving on typing and immediate flush on `blur`.
+  - The Copy action (`#btn-copy-transcript`), TXT export, and SRT export read directly from live DOM values before copying/saving, ensuring that newly typed edits are immediately copied even before an auto-save finishes.
+- **Interrupted Session Recovery & Continuous Audio Flushing**:
+  - Audio capture is incrementally saved to `audio.wav` every 5 seconds and on every transcribed phrase.
+  - If the application is abruptly closed during a recording, the backend recovers the session on next launch with status `"interrupted"`, preserves all transcribed phrases, and keeps `audio.wav` playable and retryable.
+  - The history UI marks abruptly closed sessions as `"Closed abruptly"` (`.transcript-tag.warn`) and offers a `"Transcribe recording"` button to run full high-quality transcription on the preserved audio.
+  - Successful high-quality completions (`status: "completed"`) automatically hide the Re-transcribe button to avoid redundant work.
+- **App Splash Screen**:
+  - A sleek, minimalist dark launch screen (`#splash-screen`) displays brand audio wave animations and status text while connecting to the local backend.
+  - Fades out smoothly into the main application once WebSocket connection and initial diagnostics are confirmed.
 - A stopped session is durably marked `processing_hq` before HQ inference is dispatched. Completion/failure is committed only when the callback's `job_id` still owns that session. A transcript edited after the job starts is not overwritten by its late result.
 - Only one HQ job per session can be reserved. Re-transcription is rejected while recording, while its session already has an HQ job, or while the model is not downloaded.
 - STT failures never create simulated/fabricated transcript text. Phrase events include an `error` and the UI keeps the segment visibly retryable via the post-recording HQ pass.
@@ -75,6 +88,25 @@ sayso/ (transcriber)
 - Phrase lifecycle events are ordered as `phrase_pending` (audio segment completed, before STT queueing) followed by `phrase_transcribed`. Both carry the same `phrase_id`, allowing the frontend to render an animated skeleton and replace it in place without duplicate rows. Pending phrases are UI-only and are not persisted until transcription returns.
 - Saved device/language settings live in `localStorage` under `sayso.settings`.
 - Tests set `SAYSO_DISABLE_MODEL_AUTOLOAD=1` in `tests/conftest.py`. Backend tests must use fake models and simulated audio; they must never download/load the real model or require audio hardware.
+
+## Process Ownership and Shutdown
+
+- The Rust/Tauri host is the owner of the Python backend on `127.0.0.1:48653`.
+  `start.bat` and `start.ps1` deliberately do not start Python themselves.
+- All command invocations (`netstat`, `taskkill`, `python --version`) in the Tauri host
+  use `silent_command` configured with Windows `CREATE_NO_WINDOW` (`0x08000000`)
+  so process management and shutdown never produce flashing console windows.
+- In `cleanup_processes()`, candidate listener PIDs across all reserved ports are gathered
+  in a single `netstat` call, speeding up shutdown and eliminating redundant executions.
+- On `ExitRequested`/`Exit`, the host forcefully terminates the backend process tree
+  with Windows `taskkill /T /F`. It also scans the app-reserved Vite ports
+  `41765`/`41766` so stale dev servers from an older/crashed launch are removed.
+- If a backend is already listening when the app starts, its listener PID is adopted
+  and cleaned up on exit rather than being left behind. This is intentional because
+  those localhost ports are reserved for Sayso.
+- The web-only launcher (`start-web.bat`) is separate from the Tauri lifecycle and
+  should be stopped with Ctrl+C; the desktop launcher is the supported path when
+  shutdown cleanup is required.
 
 ## Validation Commands
 

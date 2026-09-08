@@ -195,6 +195,29 @@ class AudioRecorder:
             "audio": final_audio,
         }
 
+    def get_current_audio(self) -> np.ndarray:
+        """Return captured audio so far without stopping the recorder."""
+        with self._lock:
+            if not self._mic_audio_chunks and not self._loopback_audio_chunks:
+                return np.zeros(0, dtype=np.float32)
+            mic_chunks = list(self._mic_audio_chunks)
+            sys_chunks = list(self._loopback_audio_chunks)
+
+        full_mic = np.concatenate(mic_chunks) if mic_chunks else np.zeros(0, dtype=np.float32)
+        full_sys = np.concatenate(sys_chunks) if sys_chunks else np.zeros(0, dtype=np.float32)
+
+        if len(full_mic) > 0 and len(full_sys) > 0:
+            max_len = max(len(full_mic), len(full_sys))
+            mixed = np.zeros(max_len, dtype=np.float32)
+            mixed[:len(full_mic)] += full_mic * 0.9
+            mixed[:len(full_sys)] += full_sys * 0.9
+            return np.clip(mixed, -1.0, 1.0)
+        elif len(full_mic) > 0:
+            return full_mic
+        elif len(full_sys) > 0:
+            return full_sys
+        return np.zeros(0, dtype=np.float32)
+
     def _report_capture_error(self, source: str, error: str):
         self.last_error = error
         payload = {

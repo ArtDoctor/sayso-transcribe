@@ -8,6 +8,27 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
+    <!-- App Splash / Launch Loading Screen -->
+    <div id="splash-screen" class="splash-screen">
+      <div class="splash-card">
+        <div class="splash-logo">
+          <svg viewBox="0 0 64 64" width="60" height="60" fill="none" stroke="currentColor" stroke-width="2.5" class="splash-icon">
+            <circle cx="32" cy="32" r="28" stroke="rgba(255,255,255,0.15)" stroke-width="2" />
+            <line x1="18" y1="28" x2="18" y2="36" stroke="currentColor" stroke-linecap="round" class="splash-bar splash-bar-1" />
+            <line x1="25" y1="22" x2="25" y2="42" stroke="currentColor" stroke-linecap="round" class="splash-bar splash-bar-2" />
+            <line x1="32" y1="16" x2="32" y2="48" stroke="currentColor" stroke-linecap="round" class="splash-bar splash-bar-3" />
+            <line x1="39" y1="22" x2="39" y2="42" stroke="currentColor" stroke-linecap="round" class="splash-bar splash-bar-4" />
+            <line x1="46" y1="28" x2="46" y2="36" stroke="currentColor" stroke-linecap="round" class="splash-bar splash-bar-5" />
+          </svg>
+        </div>
+        <div class="splash-title">SAYSO</div>
+        <div class="splash-subtitle" id="splash-status-text">Starting engine…</div>
+        <div class="splash-progress-track">
+          <div class="splash-progress-shimmer"></div>
+        </div>
+      </div>
+    </div>
+
     <div id="app" class="app-container">
       <!-- Minimalist Monochrome Header -->
       <header class="app-header">
@@ -147,23 +168,21 @@
             <!-- Minimalist Meters & Voice Activity Detection -->
             <div class="meters-row">
               <div class="meter-item meter-vad-item">
-                <span class="meter-label">MIC</span>
-                <div class="vad-bars" id="mic-vad-bars" title="Voice activity indicator">
+                <span id="label-mic" class="meter-label">MIC</span>
+                <div class="vad-bars" id="mic-vad-bars" title="Microphone voice activity indicator">
                   <div class="vad-bar" id="vad-bar-1"></div>
                   <div class="vad-bar" id="vad-bar-2"></div>
                   <div class="vad-bar" id="vad-bar-3"></div>
                 </div>
-                <span id="badge-mic-speech" class="speech-state">SILENT</span>
               </div>
 
               <div class="meter-item meter-vad-item" id="meter-card-system">
-                <span class="meter-label">SYSTEM</span>
-                <div class="vad-bars" id="system-vad-bars" title="Computer audio voice activity indicator">
+                <span id="label-system" class="meter-label">LOOPBACK</span>
+                <div class="vad-bars" id="system-vad-bars" title="Loopback voice activity indicator">
                   <div class="vad-bar" id="system-vad-bar-1"></div>
                   <div class="vad-bar" id="system-vad-bar-2"></div>
                   <div class="vad-bar" id="system-vad-bar-3"></div>
                 </div>
-                <span id="badge-system-speech" class="speech-state">SILENT</span>
               </div>
             </div>
 

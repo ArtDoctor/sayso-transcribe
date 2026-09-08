@@ -59,7 +59,7 @@ export interface RecordingSession {
   duration: number;
   mode: "mic_only" | "mic_and_system";
   language: string;
-  status: "recording" | "processing_hq" | "completed" | "hq_error";
+  status: "recording" | "processing_hq" | "completed" | "hq_error" | "interrupted";
   status_error?: string | null;
   phrases: Phrase[];
   final_transcript: string;

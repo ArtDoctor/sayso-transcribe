@@ -386,5 +386,50 @@ def test_ensure_model_loading_spawns_loader(monkeypatch):
         engine.shutdown()
 
 
+def test_recover_interrupted_sessions():
+    """Verify interrupted sessions are recovered with 'interrupted' status and preserved transcript."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = StorageManager(base_dir=Path(tmpdir))
+        sess = storage.create_session("sess_abrupt_1", mode="mic_only", title="Abrupt Session")
+        assert sess["status"] == "recording"
+
+        storage.append_phrase("sess_abrupt_1", {
+            "phrase_id": "p_live_1",
+            "speaker": "You",
+            "start_time": 0.0,
+            "end_time": 2.5,
+            "text": "Live transcribed before crash.",
+        })
+
+        audio = np.ones(16000, dtype=np.float32) * 0.1
+        storage.save_audio("sess_abrupt_1", audio)
+
+        recovered = storage.recover_interrupted_sessions()
+        assert recovered == 1
+
+        rec_sess = storage.get_session("sess_abrupt_1")
+        assert rec_sess["status"] == "interrupted"
+        assert "closed abruptly" in rec_sess["status_error"].lower()
+        assert "Live transcribed before crash." in rec_sess["final_transcript"]
+        assert storage.load_audio("sess_abrupt_1") is not None
+
+
+def test_recorder_get_current_audio():
+    """Verify get_current_audio mixes and returns audio accumulated so far."""
+    from backend.recorder import AudioRecorder
+    rec = AudioRecorder()
+    assert len(rec.get_current_audio()) == 0
+
+    chunk1 = np.ones(1600, dtype=np.float32) * 0.2
+    chunk2 = np.ones(1600, dtype=np.float32) * 0.3
+    rec._mic_audio_chunks.append(chunk1)
+    rec._mic_audio_chunks.append(chunk2)
+
+    current = rec.get_current_audio()
+    assert len(current) == 3200
+    assert np.allclose(current[:1600], 0.2)
+
+
+
 
 

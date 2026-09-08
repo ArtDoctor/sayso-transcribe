@@ -143,6 +143,12 @@ def on_phrase_transcribed(phrase_data: Dict[str, Any]):
     session_id = phrase_data.get("session_id")
     if session_id:
         storage.append_phrase(session_id, phrase_data)
+        try:
+            curr_audio = recorder.get_current_audio()
+            if len(curr_audio) > 0:
+                storage.save_audio(session_id, curr_audio)
+        except Exception as e:
+            logger.debug("Incremental audio save failed: %s", e)
     # Broadcast to UI
     ws_manager.broadcast_sync({
         "type": "phrase_transcribed",
@@ -327,6 +333,20 @@ def start_recording(req: StartRecordRequest):
         if not success:
             storage.delete_session(session_id)
             raise HTTPException(status_code=500, detail="Failed to initialize audio capture stream")
+
+        def _periodic_flush():
+            while recorder.is_recording:
+                time.sleep(5)
+                sid = recorder.session_id
+                if sid and recorder.is_recording:
+                    try:
+                        curr = recorder.get_current_audio()
+                        if len(curr) > 0:
+                            storage.save_audio(sid, curr)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_periodic_flush, daemon=True).start()
 
     # Broadcast session started
     ws_manager.broadcast_sync({

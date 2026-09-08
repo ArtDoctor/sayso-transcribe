@@ -13,32 +13,9 @@ try {
     exit 1
 }
 
-# Check if Python backend is already active
-$backendUp = $false
-try {
-    $res = Invoke-RestMethod -Uri "http://127.0.0.1:48653/api/status" -TimeoutSec 1 -ErrorAction SilentlyContinue
-    if ($res.status -eq "online") { $backendUp = $true }
-} catch {}
-
-if (-not $backendUp) {
-    Write-Host "[*] Starting Python backend in background (no console, logging to logs.txt)..." -ForegroundColor Yellow
-    $pyExe = if (Get-Command pythonw -ErrorAction SilentlyContinue) { "pythonw" } else { "python" }
-    Start-Process -FilePath $pyExe -ArgumentList "-m", "backend.main" -WorkingDirectory $PSScriptRoot -WindowStyle Hidden
-
-    for ($i = 0; $i -lt 20; $i++) {
-        Start-Sleep -Milliseconds 500
-        try {
-            $testRes = Invoke-RestMethod -Uri "http://127.0.0.1:48653/api/status" -TimeoutSec 1 -ErrorAction SilentlyContinue
-            if ($testRes.status -eq "online") {
-                $backendUp = $true
-                Write-Host "[OK] Python backend is online on 127.0.0.1:48653." -ForegroundColor Green
-                break
-            }
-        } catch {}
-    }
-} else {
-    Write-Host "[OK] Python backend is already active on port 48653." -ForegroundColor Green
-}
+# The Tauri host starts and owns the Python backend. Do not launch it here:
+# this lets the host hard-kill stale Python/Vite processes when the window closes.
+Write-Host "[*] Tauri will start and supervise the Python backend." -ForegroundColor Yellow
 
 # Check node_modules
 if (-not (Test-Path "node_modules")) {

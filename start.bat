@@ -6,30 +6,11 @@ echo   Sayso - Desktop Launcher
 echo ===================================================
 echo.
 
-REM Start Python backend in background (no console window) if not already running
-curl.exe -s http://127.0.0.1:48653/api/status >nul 2>&1
-if errorlevel 1 (
-    echo [*] Starting Python backend in background (logging to logs.txt)...
-    where pythonw >nul 2>&1
-    if %ERRORLEVEL% EQU 0 (
-        start "" pythonw -m backend.main
-    ) else (
-        powershell -NoProfile -WindowStyle Hidden -Command "Start-Process python -ArgumentList '-m', 'backend.main' -WorkingDirectory '%~dp0' -WindowStyle Hidden"
-    )
-
-    echo [*] Waiting for Python backend to initialize...
-    for /L %%i in (1,1,20) do (
-        curl.exe -s http://127.0.0.1:48653/api/status >nul 2>&1
-        if not errorlevel 1 goto backend_ready
-        ping 127.0.0.1 -n 2 >nul
-    )
-    echo [WARNING] Python backend taking longer to initialize, continuing...
-)
-
-:backend_ready
-echo [OK] Python backend active on 127.0.0.1:48653.
+REM The Tauri host starts and owns the Python backend. Keeping this launcher
+REM from spawning it is important: the host can then hard-kill it on exit,
+REM including stale processes left by an older launch.
+echo [*] Tauri will start and supervise the Python backend.
 echo.
-
 REM Install dependencies if needed
 if not exist node_modules call npm install
 

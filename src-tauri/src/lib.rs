@@ -2,11 +2,21 @@ use std::env;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::RunEvent;
 
-static BACKEND_PROCESS: Mutex<Option<Child>> = Mutex::new(None);
+const BACKEND_PORT: u16 = 48653;
+const VITE_PORTS: [u16; 2] = [41765, 41766];
+
+struct ManagedProcess {
+    pid: u32,
+    child: Option<Child>,
+}
+
+static BACKEND_PROCESS: Mutex<Option<ManagedProcess>> = Mutex::new(None);
+static CLEANUP_DONE: AtomicBool = AtomicBool::new(false);
 
 fn packaged_root() -> PathBuf {
     let executable_dir = env::current_exe()
@@ -22,6 +32,16 @@ fn packaged_root() -> PathBuf {
         .unwrap_or(source_root)
 }
 
+fn silent_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 fn local_python(root: &PathBuf) -> Option<PathBuf> {
     // pythonw keeps the backend console hidden in a packaged Windows build.
     // The regular python executable is retained as a fallback for diagnostics.
@@ -34,17 +54,105 @@ fn local_python(root: &PathBuf) -> Option<PathBuf> {
     None
 }
 
+fn listening_pids_for_ports(ports: &[u16]) -> Vec<u32> {
+    let output = match silent_command("netstat").args(["-ano", "-p", "tcp"]).output() {
+        Ok(output) => output,
+        Err(_) => return Vec::new(),
+    };
+
+    let suffixes: Vec<String> = ports.iter().map(|p| format!(":{}", p)).collect();
+    let mut pids = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        // Windows netstat format: TCP local-address remote-address state pid.
+        if fields.len() >= 5
+            && fields[0].eq_ignore_ascii_case("TCP")
+            && suffixes.iter().any(|suffix| fields[1].ends_with(suffix))
+            && fields[3].eq_ignore_ascii_case("LISTENING")
+        {
+            if let Ok(pid) = fields[4].parse::<u32>() {
+                pids.push(pid);
+            }
+        }
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+fn listening_pids(port: u16) -> Vec<u32> {
+    listening_pids_for_ports(&[port])
+}
+
+fn kill_process_tree(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // /T is important: Python/Node may have spawned children that otherwise
+        // survive the parent process. /F deliberately makes shutdown reliable.
+        let _ = silent_command("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .output();
+    }
+}
+
+fn terminate_process(process: ManagedProcess) {
+    let pid = process.pid;
+    if let Some(mut child) = process.child {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    kill_process_tree(pid);
+}
+
+fn cleanup_processes() {
+    if CLEANUP_DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let managed_backend = BACKEND_PROCESS.lock().ok().and_then(|mut lock| lock.take());
+    if let Some(process) = managed_backend {
+        terminate_process(process);
+    }
+
+    // Also reap processes left by an older launcher/crashed frontend. These are
+    // application-reserved ports, so this catches stale Python and Vite servers
+    // even when this Tauri instance did not spawn them itself.
+    let all_ports: Vec<u16> = std::iter::once(BACKEND_PORT).chain(VITE_PORTS).collect();
+    let pids = listening_pids_for_ports(&all_ports);
+    for pid in pids {
+        kill_process_tree(pid);
+    }
+}
+
 fn ensure_backend_running() {
-    let addr = "127.0.0.1:48653";
+    let addr = format!("127.0.0.1:{}", BACKEND_PORT);
     if TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(250)).is_ok() {
-        println!("[Tauri] Backend is already running on {}.", addr);
+        let pid = listening_pids(BACKEND_PORT).into_iter().next();
+        println!(
+            "[Tauri] Backend is already running on {} (PID: {:?}).",
+            addr, pid
+        );
+        if let Ok(mut lock) = BACKEND_PROCESS.lock() {
+            *lock = pid.map(|pid| ManagedProcess { pid, child: None });
+        }
         return;
     }
 
     let root = packaged_root();
     let py_bin = local_python(&root).or_else(|| {
         for name in ["pythonw", "python"] {
-            if Command::new(name).arg("--version").output().is_ok() {
+            if silent_command(name).arg("--version").output().is_ok() {
                 return Some(PathBuf::from(name));
             }
         }
@@ -56,26 +164,33 @@ fn ensure_backend_running() {
         return;
     };
 
-    println!("[Tauri] Starting Python backend ({:?}) on {}...", py_bin, addr);
-    let mut cmd = Command::new(&py_bin);
+    println!(
+        "[Tauri] Starting Python backend ({:?}) on {}...",
+        py_bin, addr
+    );
+    let mut cmd = silent_command(py_bin.to_str().unwrap_or("python"));
     cmd.args(["-m", "backend.main"])
-        .current_dir(&root)
-        .env("HF_HOME", root.join("models").join("huggingface"))
-        .env("HF_HUB_CACHE", root.join("models").join("huggingface").join("hub"))
-        .env("TORCH_HOME", root.join("models").join("torch"));
+        .current_dir(&root);
 
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW = 0x08000000 to keep it backgrounded
-        cmd.creation_flags(0x08000000);
+    let is_portable = root.join("python").is_dir();
+    if is_portable && root.join("models").is_dir() {
+        cmd.env("HF_HOME", root.join("models").join("huggingface"))
+            .env(
+                "HF_HUB_CACHE",
+                root.join("models").join("huggingface").join("hub"),
+            )
+            .env("TORCH_HOME", root.join("models").join("torch"));
     }
 
     match cmd.spawn() {
         Ok(child) => {
-            println!("[Tauri] Python backend spawned (PID: {}).", child.id());
+            let pid = child.id();
+            println!("[Tauri] Python backend spawned (PID: {}).", pid);
             if let Ok(mut lock) = BACKEND_PROCESS.lock() {
-                *lock = Some(child);
+                *lock = Some(ManagedProcess {
+                    pid,
+                    child: Some(child),
+                });
             }
         }
         Err(err) => {
@@ -100,13 +215,9 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|_app_handle, event| {
-        if let RunEvent::ExitRequested { .. } = event {
-            if let Ok(mut lock) = BACKEND_PROCESS.lock() {
-                if let Some(mut child) = lock.take() {
-                    println!("[Tauri] Terminating backend process...");
-                    let _ = child.kill();
-                }
-            }
+        if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
+            println!("[Tauri] Hard-stopping Sayso child processes...");
+            cleanup_processes();
         }
     });
 }
