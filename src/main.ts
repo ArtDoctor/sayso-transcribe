@@ -1,4 +1,13 @@
 import { api, BackendStatus, RecordingSession, Phrase, ModelDownloadProgress } from "./api.ts";
+import { invoke } from "@tauri-apps/api/core";
+
+// Window & Titlebar Controls
+const appTitlebar = document.getElementById("app-titlebar") as HTMLElement | null;
+const btnWinMinimize = document.getElementById("btn-win-minimize") as HTMLButtonElement | null;
+const btnWinMaximize = document.getElementById("btn-win-maximize") as HTMLButtonElement | null;
+const btnWinClose = document.getElementById("btn-win-close") as HTMLButtonElement | null;
+const winMaximizeIcon = document.getElementById("win-maximize-icon") as HTMLElement | null;
+const winRestoreIcon = document.getElementById("win-restore-icon") as HTMLElement | null;
 
 // DOM Elements
 const tabRecord = document.getElementById("tab-record") as HTMLButtonElement;
@@ -6,7 +15,7 @@ const tabHistory = document.getElementById("tab-history") as HTMLButtonElement;
 const viewRecord = document.getElementById("view-record") as HTMLElement;
 const viewHistory = document.getElementById("view-history") as HTMLElement;
 
-// Header Status & Diagnostics
+// Status & Diagnostics (Sidebar)
 const btnStatusIndicator = document.getElementById("btn-status-indicator") as HTMLButtonElement;
 const statusCircleDot = document.getElementById("status-circle-dot") as HTMLElement;
 const diagnosticsPopover = document.getElementById("diagnostics-popover") as HTMLElement;
@@ -152,6 +161,7 @@ function dismissSplashScreen() {
 async function initApp() {
   loadSavedSettings();
   setupTabs();
+  setupWindowControls();
   setupDiagnostics();
   setupHqModal();
   setupSettingsModal();
@@ -179,19 +189,38 @@ async function initApp() {
   // Listen to WebSocket messages
   api.onWsMessage(handleWebSocketMessage);
 
-  // Initial load attempt
+  // Initial load attempt (only if backend is already running)
   await refreshStatus();
-  await refreshDevices();
-  await refreshHistory();
-  if (backendOnline) dismissSplashScreen();
+  if (backendOnline) {
+    await refreshDevices();
+    await refreshHistory();
+    dismissSplashScreen();
+  }
+
+  // Safety fallback: ensure splash screen doesn't block UI indefinitely
+  window.setTimeout(() => {
+    if (!splashDismissed) {
+      dismissSplashScreen();
+    }
+  }, 10000);
 
   // Poll as a fallback for missed WebSocket events. Never overlap slow polls.
   window.setInterval(async () => {
     if (statusPollInFlight) return;
     statusPollInFlight = true;
     try {
+      const wasOnline = backendOnline;
       await refreshStatus();
-      if (selectMicDevice.children.length === 0) await refreshDevices();
+      if (backendOnline) {
+        if (!splashDismissed) {
+          await refreshDevices();
+          await refreshHistory();
+          dismissSplashScreen();
+        } else if (!wasOnline || selectMicDevice.children.length === 0) {
+          await refreshDevices();
+          await refreshHistory();
+        }
+      }
     } finally {
       statusPollInFlight = false;
     }
@@ -527,12 +556,24 @@ function updateStatusCircleAndDiagnostics() {
     diagBackendVal.textContent = "Offline (Disconnected)";
     diagBackendVal.style.color = "var(--danger)";
     diagModelVal.textContent = "Unknown (Backend Offline)";
+    diagModelVal.style.color = "var(--text-muted)";
     diagDeviceVal.textContent = "Unknown";
+    diagDeviceVal.style.color = "var(--text-muted)";
+    diagMicVal.textContent = "Unavailable";
+    diagMicVal.style.color = "var(--text-muted)";
+    diagSystemVal.textContent = "Unavailable";
+    diagSystemVal.style.color = "var(--text-muted)";
+    diagSessionVal.textContent = "Offline";
+    diagSessionVal.style.color = "var(--text-muted)";
     return;
   }
 
   diagBackendVal.textContent = "Online";
   diagBackendVal.style.color = "var(--text-primary)";
+  diagModelVal.style.color = "var(--text-primary)";
+  diagDeviceVal.style.color = "var(--text-primary)";
+  diagMicVal.style.color = "var(--text-primary)";
+  diagSystemVal.style.color = "var(--text-primary)";
 
   // Compute device
   if (latestStatus?.device === "cuda") {
@@ -626,6 +667,12 @@ function setupDiagnostics() {
       if (!diagnosticsPopover.contains(target) && !btnStatusIndicator.contains(target)) {
         diagnosticsPopover.classList.add("hidden");
       }
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !diagnosticsPopover.classList.contains("hidden")) {
+      diagnosticsPopover.classList.add("hidden");
     }
   });
 }
@@ -1018,6 +1065,15 @@ async function refreshHistory() {
     if (requestGeneration !== historyRequestGeneration) return;
     recordingsCountSpan.textContent = String(sessions.length);
 
+    // If there was an active "History unavailable" message, clear it now that recordings loaded
+    if (appStatusMessage.textContent?.startsWith("History unavailable")) {
+      appStatusMessage.classList.add("hidden");
+      if (statusMessageTimer) {
+        window.clearTimeout(statusMessageTimer);
+        statusMessageTimer = null;
+      }
+    }
+
     sessionsList.innerHTML = "";
     if (sessions.length === 0) {
       sessionsList.innerHTML = `<div style="padding: 20px; color: var(--text-muted); text-align: center; font-size: 14px;">No recordings yet.</div>`;
@@ -1051,8 +1107,12 @@ async function refreshHistory() {
     });
   } catch (error: any) {
     if (requestGeneration === historyRequestGeneration) {
-      sessionsList.innerHTML = `<div class="list-state error">Could not load recordings. Use Refresh to retry.</div>`;
-      showMessage(`History unavailable: ${error.message}`, true);
+      if (backendOnline) {
+        sessionsList.innerHTML = `<div class="list-state error">Could not load recordings. Use Refresh to retry.</div>`;
+        showMessage(`History unavailable: ${error.message}`, true);
+      } else {
+        sessionsList.innerHTML = `<div class="list-state">Waiting for backend connection…</div>`;
+      }
     }
   } finally {
     if (requestGeneration === historyRequestGeneration) sessionsList.setAttribute("aria-busy", "false");
@@ -1651,6 +1711,88 @@ function switchTab(tab: "record" | "history") {
     viewHistory.classList.add("active");
     void refreshHistory();
   }
+}
+
+// Window Controls (Tauri IPC with Graceful Web Fallback)
+function isTauriEnvironment(): boolean {
+  return typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__);
+}
+
+async function updateMaximizeState() {
+  if (!isTauriEnvironment()) return;
+  try {
+    const isMax = await invoke<boolean>("is_window_maximized");
+    if (typeof isMax === "boolean" && winMaximizeIcon && winRestoreIcon) {
+      winMaximizeIcon.classList.toggle("hidden", isMax);
+      winRestoreIcon.classList.toggle("hidden", !isMax);
+      btnWinMaximize?.setAttribute("title", isMax ? "Restore" : "Enlarge");
+      btnWinMaximize?.setAttribute("aria-label", isMax ? "Restore" : "Enlarge");
+    }
+  } catch {
+    // Ignore if not in Tauri
+  }
+}
+
+function setupWindowControls() {
+  btnWinMinimize?.addEventListener("click", async () => {
+    if (isTauriEnvironment()) {
+      try {
+        await invoke("minimize_window");
+      } catch (err) {
+        console.warn("[Tauri] minimize error", err);
+      }
+    }
+  });
+
+  btnWinMaximize?.addEventListener("click", async () => {
+    if (isTauriEnvironment()) {
+      try {
+        await invoke("toggle_maximize_window");
+        window.setTimeout(() => void updateMaximizeState(), 60);
+      } catch (err) {
+        console.warn("[Tauri] toggle_maximize error", err);
+      }
+    } else {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  });
+
+  btnWinClose?.addEventListener("click", async () => {
+    if (isTauriEnvironment()) {
+      try {
+        await invoke("close_window");
+      } catch (err) {
+        console.warn("[Tauri] close error", err);
+      }
+    } else {
+      window.close();
+    }
+  });
+
+  if (appTitlebar) {
+    appTitlebar.addEventListener("dblclick", async (e) => {
+      if (!(e.target as HTMLElement).closest(".titlebar-btn")) {
+        if (isTauriEnvironment()) {
+          try {
+            await invoke("toggle_maximize_window");
+            window.setTimeout(() => void updateMaximizeState(), 60);
+          } catch (err) {
+            console.warn("[Tauri] toggle_maximize error", err);
+          }
+        }
+      }
+    });
+  }
+
+  window.addEventListener("resize", () => {
+    void updateMaximizeState();
+  });
+
+  void updateMaximizeState();
 }
 
 // Utility Helpers

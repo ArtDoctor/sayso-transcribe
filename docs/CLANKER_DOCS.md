@@ -58,12 +58,16 @@ sayso/ (transcriber)
 
 - Recording admission and stop transitions are serialized by `_recording_transition_lock`. Duplicate starts/stops return HTTP 409 and mutation requests are never automatically replayed by the frontend API client.
 - `/api/status` is the recovery source of truth after refresh or a missed WebSocket event. It includes `model_status` (including `"not_loaded"`), `is_model_loaded`, `device`, `cuda_device_name`, active session, recording mode, elapsed duration, and audio-capture error.
-- **Unified Status Indicator & Diagnostics**: Replaced dual pills with a single status circle dot in header:
-  - Green (`.status-good`): backend connected and model ready (either in memory or ready on disk).
-  - Yellow (`.status-warn`): model loading, downloading, or transcribing.
-  - Red (`.status-bad` / `.status-offline`): backend offline or model error / not downloaded.
-  - Clicking opens `#diagnostics-popover` detailing backend connectivity, model status, compute device (CUDA / CPU), selected audio inputs, and active session.
-- **3-Bar VAD Visualizer & Glowing Labels**: Replaced text status pills with matching 3 white vertical bars for microphone (`#vad-bar-1..3`) and computer/system audio (`#system-vad-bar-1..3`) that smoothly expand upward when speech is detected and contract down to 4px when silent. Labels (`#label-mic` and `#label-system`) glow bright white with text-shadow when voice is actively detected.
+- **Frameless Window Shell & Integrated Titlebar**:
+  - The native OS window chrome is disabled (`"decorations": false` and `"shadow": true` in `tauri.conf.json`).
+  - Sleek top titlebar (`#app-titlebar`) features the Sayso brand logo (`/icon.svg`), title, native window drag region (`data-tauri-drag-region`, `-webkit-app-region: drag`), and custom window controls (`#btn-win-minimize`, `#btn-win-maximize`, `#btn-win-close`).
+  - Window buttons communicate directly with Tauri 2 IPC commands (`minimize_window`, `toggle_maximize_window`, `close_window`, `is_window_maximized`) with graceful web fallbacks.
+  - Double-clicking the titlebar toggles maximize state.
+- **Left Navigation Sidebar**:
+  - Main app navigation moved to a dedicated left sidebar (`#app-sidebar`):
+    - Top view buttons: Record (`#tab-record`) and History (`#tab-history`) with badge counter (`#recordings-count`).
+    - Bottom footer controls: Status Circle (`#btn-status-indicator`) and Settings (`#btn-open-settings`).
+  - Unified status dot glows green (ready/loaded), yellow (busy/transcribing), or red (offline/attention) and opens the `#diagnostics-popover` extending into the main view. The `#app-sidebar` container must preserve `overflow: visible` (with relative positioning and `z-index: 100`) so the popover is never clipped by sidebar bounds. Popover can be dismissed via outside click, close button, or Escape key.
 - **Instant Speaking Skeleton & Top-First Transcript Stream**:
   - Voice activity detection instantly displays an animated speaking placeholder row (`.live-speaking-skeleton`) at the top of the transcript list as soon as speech begins.
   - When the speech segment finishes, `phrase_pending` smoothly adopts the active skeleton without layout shifts, and `phrase_transcribed` reveals the final text in place.
@@ -78,9 +82,10 @@ sayso/ (transcriber)
   - If the application is abruptly closed during a recording, the backend recovers the session on next launch with status `"interrupted"`, preserves all transcribed phrases, and keeps `audio.wav` playable and retryable.
   - The history UI marks abruptly closed sessions as `"Closed abruptly"` (`.transcript-tag.warn`) and offers a `"Transcribe recording"` button to run full high-quality transcription on the preserved audio.
   - Successful high-quality completions (`status: "completed"`) automatically hide the Re-transcribe button to avoid redundant work.
-- **App Splash Screen**:
+- **App Splash Screen & Clean Startup Sequence**:
   - A sleek, minimalist dark launch screen (`#splash-screen`) displays brand audio wave animations and status text while connecting to the local backend.
-  - Fades out smoothly into the main application once WebSocket connection and initial diagnostics are confirmed.
+  - Fades out smoothly into the main application once WebSocket connection and initial diagnostics are confirmed. Includes a 10s safety timeout to avoid blocking the UI if startup hangs.
+  - Initial load only fetches devices and history if the backend is already online, and suppresses error toasts while the backend is still launching so users never see a transient "History unavailable" banner when launching the app. Successful history fetch immediately clears any active history error banner.
 - A stopped session is durably marked `processing_hq` before HQ inference is dispatched. Completion/failure is committed only when the callback's `job_id` still owns that session. A transcript edited after the job starts is not overwritten by its late result.
 - Only one HQ job per session can be reserved. Re-transcription is rejected while recording, while its session already has an HQ job, or while the model is not downloaded.
 - STT failures never create simulated/fabricated transcript text. Phrase events include an `error` and the UI keeps the segment visibly retryable via the post-recording HQ pass.

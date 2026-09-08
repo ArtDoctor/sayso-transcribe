@@ -30,66 +30,116 @@
     </div>
 
     <div id="app" class="app-container">
-      <!-- Minimalist Monochrome Header -->
-      <header class="app-header">
-        <div class="header-left">
-          <div class="brand">SAYSO</div>
-          <nav class="nav-tabs" role="tablist" aria-label="Main views">
-            <button id="tab-record" class="tab-btn active" role="tab" aria-selected="true" aria-controls="view-record">Record</button>
-            <button id="tab-history" class="tab-btn" role="tab" aria-selected="false" aria-controls="view-history">History (<span id="recordings-count">0</span>)</button>
-          </nav>
+      <!-- App Window Titlebar / Toolbar (Integrated Custom Buttons) -->
+      <header id="app-titlebar" class="app-titlebar" data-tauri-drag-region>
+        <div class="titlebar-left" data-tauri-drag-region>
+          <img src="/icon.svg" class="titlebar-logo" alt="Sayso Logo" width="20" height="20" />
+          <span class="titlebar-title">SAYSO</span>
         </div>
-
-        <div class="header-right">
-          <div class="status-circle-container">
-            <button id="btn-status-indicator" class="status-circle-btn" title="Status: Connecting (Click for diagnostics)" aria-label="System status and diagnostics">
-              <span id="status-circle-dot" class="status-circle-dot status-offline"></span>
-            </button>
-            <div id="diagnostics-popover" class="diagnostics-popover hidden" role="dialog" aria-labelledby="diag-title">
-              <div class="diag-head">
-                <span id="diag-title" class="diag-title">System Diagnostics</span>
-                <button id="btn-close-diag" class="icon-btn-sm" aria-label="Close diagnostics">✕</button>
-              </div>
-              <div class="diag-body">
-                <div class="diag-row">
-                  <span class="diag-label">Backend</span>
-                  <span id="diag-backend-val" class="diag-val">Connecting…</span>
-                </div>
-                <div class="diag-row">
-                  <span class="diag-label">Model</span>
-                  <span id="diag-model-val" class="diag-val">Checking…</span>
-                </div>
-                <div class="diag-row">
-                  <span class="diag-label">Device</span>
-                  <span id="diag-device-val" class="diag-val">Checking…</span>
-                </div>
-                <div class="diag-row">
-                  <span class="diag-label">Microphone</span>
-                  <span id="diag-mic-val" class="diag-val">Default</span>
-                </div>
-                <div class="diag-row">
-                  <span class="diag-label">System Audio</span>
-                  <span id="diag-system-val" class="diag-val">Default</span>
-                </div>
-                <div class="diag-row">
-                  <span class="diag-label">Session</span>
-                  <span id="diag-session-val" class="diag-val">Idle</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <button id="btn-open-settings" class="icon-btn" title="Settings" aria-label="Settings">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3" />
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+        <div class="titlebar-drag-spacer" data-tauri-drag-region></div>
+        <div class="titlebar-controls">
+          <button id="btn-win-minimize" class="titlebar-btn" title="Minimize" aria-label="Minimize">
+            <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
+              <rect x="2" y="8" width="12" height="1.5" rx="0.75" />
+            </svg>
+          </button>
+          <button id="btn-win-maximize" class="titlebar-btn" title="Enlarge" aria-label="Enlarge">
+            <svg id="win-maximize-icon" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="2.5" y="2.5" width="11" height="11" rx="1.5" />
+            </svg>
+            <svg id="win-restore-icon" class="hidden" viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="4.5" y="2.5" width="9" height="9" rx="1" />
+              <path d="M2.5 5.5v8a1 1 0 0 0 1 1h8" />
+            </svg>
+          </button>
+          <button id="btn-win-close" class="titlebar-btn titlebar-btn-close" title="Close" aria-label="Close">
+            <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <line x1="3.5" y1="3.5" x2="12.5" y2="12.5" />
+              <line x1="12.5" y1="3.5" x2="3.5" y2="12.5" />
             </svg>
           </button>
         </div>
       </header>
 
-      <!-- Main Content -->
-      <main class="main-content">
+      <!-- App Body (Left Sidebar + Main Content) -->
+      <div class="app-body">
+        <!-- Left Navigation Sidebar -->
+        <aside id="app-sidebar" class="app-sidebar" aria-label="Navigation sidebar">
+          <div class="sidebar-top">
+            <nav class="sidebar-nav" role="tablist" aria-label="Main views">
+              <button id="tab-record" class="sidebar-btn tab-btn active" role="tab" aria-selected="true" aria-controls="view-record">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="sidebar-icon">
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="22" />
+                </svg>
+                <span class="sidebar-label">Record</span>
+              </button>
+
+              <button id="tab-history" class="sidebar-btn tab-btn" role="tab" aria-selected="false" aria-controls="view-history">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="sidebar-icon">
+                  <circle cx="12" cy="12" r="9" />
+                  <polyline points="12 7 12 12 15 15" />
+                </svg>
+                <span class="sidebar-label">History</span>
+                <span id="recordings-count" class="sidebar-badge">0</span>
+              </button>
+            </nav>
+          </div>
+
+          <div class="sidebar-footer">
+            <div class="sidebar-status-container">
+              <button id="btn-status-indicator" class="sidebar-btn sidebar-status-btn" title="Status: Connecting (Click for diagnostics)" aria-label="System status and diagnostics">
+                <span id="status-circle-dot" class="status-circle-dot status-offline"></span>
+                <span class="sidebar-label">Status</span>
+              </button>
+
+              <div id="diagnostics-popover" class="diagnostics-popover hidden" role="dialog" aria-labelledby="diag-title">
+                <div class="diag-head">
+                  <span id="diag-title" class="diag-title">System Diagnostics</span>
+                  <button id="btn-close-diag" class="icon-btn-sm" aria-label="Close diagnostics">✕</button>
+                </div>
+                <div class="diag-body">
+                  <div class="diag-row">
+                    <span class="diag-label">Backend</span>
+                    <span id="diag-backend-val" class="diag-val">Connecting…</span>
+                  </div>
+                  <div class="diag-row">
+                    <span class="diag-label">Model</span>
+                    <span id="diag-model-val" class="diag-val">Checking…</span>
+                  </div>
+                  <div class="diag-row">
+                    <span class="diag-label">Device</span>
+                    <span id="diag-device-val" class="diag-val">Checking…</span>
+                  </div>
+                  <div class="diag-row">
+                    <span class="diag-label">Microphone</span>
+                    <span id="diag-mic-val" class="diag-val">Default</span>
+                  </div>
+                  <div class="diag-row">
+                    <span class="diag-label">System Audio</span>
+                    <span id="diag-system-val" class="diag-val">Default</span>
+                  </div>
+                  <div class="diag-row">
+                    <span class="diag-label">Session</span>
+                    <span id="diag-session-val" class="diag-val">Idle</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button id="btn-open-settings" class="sidebar-btn" title="Settings" aria-label="Settings">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="sidebar-icon">
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+              </svg>
+              <span class="sidebar-label">Settings</span>
+            </button>
+          </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
         <!-- VIEW: RECORD -->
         <section id="view-record" class="view-panel active" role="tabpanel" aria-labelledby="tab-record">
           <!-- State A: Idle Screen -->
@@ -275,6 +325,7 @@
           </div>
         </section>
       </main>
+      </div>
 
       <!-- SETTINGS MODAL -->
       <div id="settings-modal" class="modal-overlay hidden">
