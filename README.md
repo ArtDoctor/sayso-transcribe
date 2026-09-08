@@ -2,6 +2,8 @@
 
 An ultra-minimalist desktop transcription app inspired by [Meetily](https://github.com/Zackriya-Solutions/meetily).
 
+https://github.com/user-attachments/assets/52a862f3-a0b7-4dbd-938b-e03ba5edaa7e
+
 I like using [Meetily](https://github.com/Zackriya-Solutions/meetily), but the lack of [Cohere](https://cohere.com/) support, a few features I don’t need, some UI/UX quirks, and - most importantly - the absence of a dark theme pushed me to vibe-code my own version: **Sayso**.
 
 I built this primarily for personal use, but if anyone else finds it useful, feel free to use it, fork it, or suggest improvements.
