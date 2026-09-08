@@ -1,0 +1,47 @@
+# JavaScript dependencies and build output
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Rust / Tauri build output
+src-tauri/target/
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Local application state and diagnostics
+recordings/
+logs.txt
+*.log
+
+# Downloaded ML weights, local caches, and generated portable distributions
+models/
+Sayso-Portable/
+Sayso-Portable.zip
+Sayso-Portable-*.zip
+.huggingface/
+.cache/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Test and coverage artifacts
+.coverage
+htmlcov/
+coverage/
+
+# Local environment files
+.env
+.env.*
+!.env.example

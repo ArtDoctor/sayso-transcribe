@@ -1,0 +1,14 @@
+# Runtime dependencies installed into the embedded Windows Python runtime.
+# PyTorch's Windows wheel includes CUDA runtime libraries when pip selects the
+# CUDA-enabled build; CPU-only machines still work through torch's CPU fallback.
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+pydantic>=2.9,<3
+numpy>=2.0,<3
+soundfile>=0.13,<1
+huggingface_hub>=0.27,<2
+tqdm>=4.66,<5
+torch>=2.2,<3
+nano-cohere-transcribe>=0.1,<1
+silero-vad>=5,<7
+PyAudioWPatch>=0.2.12,<1

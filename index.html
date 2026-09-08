@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sayso</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-container">
+      <!-- Minimalist Monochrome Header -->
+      <header class="app-header">
+        <div class="header-left">
+          <div class="brand">SAYSO</div>
+          <nav class="nav-tabs" role="tablist" aria-label="Main views">
+            <button id="tab-record" class="tab-btn active" role="tab" aria-selected="true" aria-controls="view-record">Record</button>
+            <button id="tab-history" class="tab-btn" role="tab" aria-selected="false" aria-controls="view-history">History (<span id="recordings-count">0</span>)</button>
+          </nav>
+        </div>
+
+        <div class="header-right">
+          <div class="status-circle-container">
+            <button id="btn-status-indicator" class="status-circle-btn" title="Status: Connecting (Click for diagnostics)" aria-label="System status and diagnostics">
+              <span id="status-circle-dot" class="status-circle-dot status-offline"></span>
+            </button>
+            <div id="diagnostics-popover" class="diagnostics-popover hidden" role="dialog" aria-labelledby="diag-title">
+              <div class="diag-head">
+                <span id="diag-title" class="diag-title">System Diagnostics</span>
+                <button id="btn-close-diag" class="icon-btn-sm" aria-label="Close diagnostics">✕</button>
+              </div>
+              <div class="diag-body">
+                <div class="diag-row">
+                  <span class="diag-label">Backend</span>
+                  <span id="diag-backend-val" class="diag-val">Connecting…</span>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">Model</span>
+                  <span id="diag-model-val" class="diag-val">Checking…</span>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">Device</span>
+                  <span id="diag-device-val" class="diag-val">Checking…</span>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">Microphone</span>
+                  <span id="diag-mic-val" class="diag-val">Default</span>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">System Audio</span>
+                  <span id="diag-system-val" class="diag-val">Default</span>
+                </div>
+                <div class="diag-row">
+                  <span class="diag-label">Session</span>
+                  <span id="diag-session-val" class="diag-val">Idle</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <button id="btn-open-settings" class="icon-btn" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- VIEW: RECORD -->
+        <section id="view-record" class="view-panel active" role="tabpanel" aria-labelledby="tab-record">
+          <!-- State A: Idle Screen -->
+          <div id="idle-screen" class="record-idle">
+            <!-- Model Download Gate Card -->
+            <div id="model-gate-card" class="minimal-card model-gate-box">
+              <div class="card-header-compact">
+                <span id="model-gate-tag" class="card-tag">CHECKING</span>
+                <h3 id="model-gate-title">Preparing Sayso</h3>
+              </div>
+              <p id="model-gate-desc" class="minimal-desc">Checking the local transcription model…</p>
+              
+              <!-- Download Progress bar -->
+              <div id="model-progress-container" class="progress-box hidden" role="progressbar" aria-label="Model download progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                <div class="progress-track">
+                  <div id="model-progress-bar" class="progress-fill" style="width: 0%"></div>
+                </div>
+                <div class="progress-info-row">
+                  <span id="model-progress-pct" class="progress-pct">0%</span>
+                  <span id="model-progress-bytes" class="progress-sub">0 / 3,840 MB</span>
+                  <span id="model-progress-speed" class="progress-sub"></span>
+                  <span id="model-progress-eta" class="progress-sub"></span>
+                </div>
+              </div>
+
+              <div class="card-action-row" id="model-gate-actions">
+                <button id="btn-download-model" class="btn btn-primary" disabled>Checking…</button>
+              </div>
+            </div>
+
+            <!-- Mode Selection Cards (Disabled until model is ready) -->
+            <div class="modes-container">
+              <button id="btn-start-mic" class="mode-button" disabled title="Download model first to enable">
+                <div class="mode-icon">
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" y1="19" x2="12" y2="22" />
+                  </svg>
+                </div>
+                <div class="mode-info">
+                  <div class="mode-title">Microphone</div>
+                  <div class="mode-subtitle">Solo dictation</div>
+                </div>
+              </button>
+
+              <button id="btn-start-both" class="mode-button" disabled title="Download model first to enable">
+                <div class="mode-icon">
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                    <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+                  </svg>
+                </div>
+                <div class="mode-info">
+                  <div class="mode-title">Mic + System Audio</div>
+                  <div class="mode-subtitle">Meeting & calls</div>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- State B: Active Recording Screen -->
+          <div id="active-recording-screen" class="record-active hidden">
+            <!-- Top Control Bar -->
+            <div class="active-rec-header">
+              <div class="rec-status-group">
+                <span class="rec-dot"></span>
+                <span class="rec-label">REC</span>
+                <span id="active-timer" class="rec-timer">00:00:00</span>
+                <span id="active-session-mode-badge" class="badge">Mic</span>
+              </div>
+
+              <button id="btn-stop-recording" class="btn btn-outline">Stop Recording</button>
+            </div>
+
+            <!-- Minimalist Meters & Voice Activity Detection -->
+            <div class="meters-row">
+              <div class="meter-item meter-vad-item">
+                <span class="meter-label">MIC</span>
+                <div class="vad-bars" id="mic-vad-bars" title="Voice activity indicator">
+                  <div class="vad-bar" id="vad-bar-1"></div>
+                  <div class="vad-bar" id="vad-bar-2"></div>
+                  <div class="vad-bar" id="vad-bar-3"></div>
+                </div>
+                <span id="badge-mic-speech" class="speech-state">SILENT</span>
+              </div>
+
+              <div class="meter-item" id="meter-card-system">
+                <span class="meter-label">SYSTEM</span>
+                <div class="meter-track">
+                  <div id="bar-system-level" class="meter-fill" style="width: 0%"></div>
+                </div>
+                <span id="badge-system-speech" class="speech-state">SILENT</span>
+              </div>
+            </div>
+
+            <!-- Live Phrases Stream -->
+            <div class="stream-container">
+              <div id="live-phrases-list" class="phrases-stream" aria-live="polite" aria-relevant="additions">
+                <div id="empty-phrases-hint" class="stream-empty">Listening...</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- VIEW: HISTORY -->
+        <section id="view-history" class="view-panel" role="tabpanel" aria-labelledby="tab-history">
+          <div class="history-layout">
+            <aside class="history-sidebar">
+              <div class="sidebar-top">
+                <span class="sidebar-heading">Recordings</span>
+                <button id="btn-refresh-history" class="icon-btn-sm" title="Refresh recordings" aria-label="Refresh recordings">↻</button>
+              </div>
+              <div id="sessions-list" class="sessions-scroll-list" aria-live="polite" aria-busy="false"></div>
+            </aside>
+
+            <div class="history-detail-panel" id="session-detail-view">
+              <div class="empty-detail" id="empty-detail-hint">
+                <p>Select a recording to view transcript and playback.</p>
+              </div>
+              <div class="empty-detail loading-state hidden" id="session-loading-state" role="status">
+                <span class="spinner" aria-hidden="true"></span>
+                <p>Loading recording…</p>
+              </div>
+
+              <div class="session-active-content hidden" id="session-content-card" aria-busy="false">
+                <div class="detail-header">
+                  <div class="title-row">
+                    <input type="text" id="session-title-input" class="minimal-input title-input" placeholder="Untitled Meeting (Auto-saved)" aria-label="Meeting Title" />
+                  </div>
+                  <div class="detail-meta">
+                    <span id="session-date-display"></span>
+                    <span id="session-duration-display"></span>
+                    <span id="session-mode-display" class="badge"></span>
+                  </div>
+                </div>
+
+                <!-- Minimal Audio Player -->
+                <div class="player-bar">
+                  <audio id="session-audio-element" preload="metadata"></audio>
+                  <button id="btn-player-play" class="player-btn" aria-label="Play or pause recording">
+                    <svg id="play-icon" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                      <polygon points="5 3 19 12 5 21 5 3" />
+                    </svg>
+                    <svg id="pause-icon" class="hidden" viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                      <rect x="6" y="4" width="4" height="16" />
+                      <rect x="14" y="4" width="4" height="16" />
+                    </svg>
+                  </button>
+
+                  <span id="player-current-time" class="time-text">00:00</span>
+                  <input type="range" id="player-scrub-slider" min="0" max="100" value="0" step="0.1" class="scrub-range" aria-label="Recording playback position" />
+                  <span id="player-total-time" class="time-text">00:00</span>
+
+                  <div class="speed-group">
+                    <button class="speed-btn active" data-speed="1.0">1x</button>
+                    <button class="speed-btn" data-speed="1.25">1.25x</button>
+                    <button class="speed-btn" data-speed="1.5">1.5x</button>
+                  </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="detail-actions">
+                  <button id="btn-retranscribe" class="btn btn-sm">Re-transcribe</button>
+                  <button id="btn-copy-transcript" class="btn btn-sm">Copy</button>
+                  <button id="btn-download-txt" class="btn btn-sm">TXT</button>
+                  <button id="btn-download-srt" class="btn btn-sm">SRT</button>
+                  <button id="btn-delete-session" class="btn btn-sm btn-delete">Delete</button>
+                </div>
+
+                <!-- Full Transcript (HQ 2nd Pass) -->
+                <div id="final-transcript-card" class="final-transcript-card hidden">
+                  <div class="transcript-header-row">
+                    <span class="transcript-title">Full Transcript</span>
+                    <span id="transcript-hq-status" class="transcript-tag">HQ Pass</span>
+                  </div>
+                  <textarea id="final-transcript-text" class="final-transcript-textarea" placeholder="Full transcript will appear here..." rows="4"></textarea>
+                </div>
+
+                <div id="interactive-phrases-container" class="interactive-phrases-list"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- SETTINGS MODAL -->
+      <div id="settings-modal" class="modal-overlay hidden">
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          
+          <div class="modal-head">
+            <h3 id="settings-title">Settings</h3>
+            <button id="btn-close-settings" class="icon-btn-sm" aria-label="Close">✕</button>
+          </div>
+
+          <div class="modal-body">
+            <div class="setting-group">
+              <label for="select-mic-device">Microphone</label>
+              <select id="select-mic-device" class="minimal-select"></select>
+            </div>
+
+            <div class="setting-group">
+              <label for="select-system-device">System Audio (Loopback)</label>
+              <select id="select-system-device" class="minimal-select"></select>
+            </div>
+
+            <div class="setting-row">
+              <button id="btn-refresh-devices" class="btn btn-sm">Refresh Devices</button>
+            </div>
+
+            <hr class="divider" />
+
+            <div class="setting-group">
+              <label for="select-language">Language</label>
+              <select id="select-language" class="minimal-select">
+                <option value="en" selected>English (en)</option>
+                <option value="de">German (de)</option>
+                <option value="fr">French (fr)</option>
+                <option value="es">Spanish (es)</option>
+                <option value="it">Italian (it)</option>
+                <option value="pt">Portuguese (pt)</option>
+                <option value="nl">Dutch (nl)</option>
+                <option value="pl">Polish (pl)</option>
+                <option value="ja">Japanese (ja)</option>
+                <option value="zh">Chinese (zh)</option>
+              </select>
+            </div>
+
+            <hr class="divider" />
+
+            <div class="setting-group">
+              <label>Cohere Transcribe Model</label>
+              <div class="model-meta-row">
+                <span id="settings-model-status-text" class="text-sub">Status: Checking...</span>
+                <button id="btn-preload-model" class="btn btn-sm">Download / Load</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-foot">
+            <button id="btn-save-settings" class="btn btn-primary">Done</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- HQ RETRANSCRIPTION PROGRESS MODAL -->
+      <div id="hq-progress-modal" class="modal-overlay hidden">
+        <div class="modal-card hq-progress-modal-card" role="dialog" aria-modal="true" aria-labelledby="hq-modal-title">
+          <div class="modal-head">
+            <h3 id="hq-modal-title">High-Quality Transcription</h3>
+          </div>
+          <div class="modal-body">
+            <p id="hq-modal-desc" class="minimal-desc">Running Cohere high-quality GPU transcription…</p>
+            <div class="progress-box" role="progressbar" aria-label="HQ transcription progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <div class="progress-track">
+                <div id="hq-modal-progress-bar" class="progress-fill" style="width: 0%"></div>
+              </div>
+              <div class="progress-info-row">
+                <span id="hq-modal-pct" class="progress-pct">0%</span>
+                <span id="hq-modal-chunks" class="progress-sub">Preparing audio…</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="app-status-message" class="app-status-message hidden" role="status" aria-live="polite"></div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
