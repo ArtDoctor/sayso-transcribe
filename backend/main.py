@@ -172,10 +172,29 @@ def on_vad_level(data: Dict[str, Any]):
     ws_manager.broadcast_sync(data)
 
 def on_phrase_ready(session_id: str, speaker: str, start_t: float, end_t: float, audio_np):
-    # Enqueue into STT engine for fast live transcription
+    # Tell the UI about the completed audio segment before handing it to STT.
+    # The same ID is used for the eventual result so the skeleton can be filled
+    # in-place rather than creating a second transcript row.
+    phrase_id = f"p_{int(start_t * 1000)}_{uuid.uuid4().hex[:4]}"
+    pending_phrase = {
+        "session_id": session_id,
+        "phrase_id": phrase_id,
+        "speaker": speaker,
+        "start_time": round(start_t, 2),
+        "end_time": round(end_t, 2),
+        "duration": round(end_t - start_t, 2),
+        "text": "",
+        "status": "pending",
+    }
+    ws_manager.broadcast_sync({
+        "type": "phrase_pending",
+        "phrase": pending_phrase,
+    })
+
+    # Enqueue into STT engine for fast live transcription.
     stt_engine.queue_phrase(
         session_id=session_id,
-        phrase_id=f"p_{int(start_t*1000)}",
+        phrase_id=phrase_id,
         speaker=speaker,
         start_time=start_t,
         end_time=end_t,

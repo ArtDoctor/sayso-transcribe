@@ -49,6 +49,7 @@ export interface Phrase {
   text: string;
   latency_s?: number;
   error?: string;
+  status?: "pending" | "transcribed";
 }
 
 export interface RecordingSession {
@@ -73,20 +74,31 @@ export interface VADMeterPayload {
 }
 
 function getBaseUrls() {
-  if (typeof window !== "undefined" && window.location && window.location.protocol.startsWith("http")) {
-    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const location = typeof window !== "undefined" ? window.location : undefined;
+  // Vite's development server proxies /api and /ws. Tauri production uses
+  // the `tauri.localhost` origin, which would return index.html for `/api/*`
+  // and cause JSON parsing errors. Only use relative URLs for known dev ports.
+  const isViteDevServer = Boolean(
+    location &&
+    location.protocol.startsWith("http") &&
+    (location.hostname === "localhost" || location.hostname === "127.0.0.1") &&
+    location.port === "41765"
+  );
+
+  if (isViteDevServer && location) {
+    const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
     return {
       primaryApi: "", // Uses Vite proxy in dev mode
-      fallbackApi: "http://127.0.0.1:8765",
-      primaryWs: `${wsProto}//${window.location.host}/ws`,
-      fallbackWs: "ws://127.0.0.1:8765/ws",
+      fallbackApi: "http://127.0.0.1:48653",
+      primaryWs: `${wsProto}//${location.host}/ws`,
+      fallbackWs: "ws://127.0.0.1:48653/ws",
     };
   }
   return {
-    primaryApi: "http://127.0.0.1:8765",
-    fallbackApi: "http://localhost:8765",
-    primaryWs: "ws://127.0.0.1:8765/ws",
-    fallbackWs: "ws://localhost:8765/ws",
+    primaryApi: "http://127.0.0.1:48653",
+    fallbackApi: "http://localhost:48653",
+    primaryWs: "ws://127.0.0.1:48653/ws",
+    fallbackWs: "ws://localhost:48653/ws",
   };
 }
 
@@ -183,7 +195,7 @@ export class ApiClient {
   }
 
   getAudioUrl(sessionId: string): string {
-    const base = this.activeApiBase || "http://127.0.0.1:8765";
+    const base = this.activeApiBase || "http://127.0.0.1:48653";
     return `${base}/api/recordings/${encodeURIComponent(sessionId)}/audio`;
   }
 

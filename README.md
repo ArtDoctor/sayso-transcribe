@@ -1,12 +1,14 @@
 # Sayso
 
-An ultra-minimalist desktop transcription app inspired by Meetily.
+An ultra-minimalist desktop transcription app inspired by [Meetily](https://github.com/Zackriya-Solutions/meetily).
 
-I like using Meetily, but the lack of Cohere support, a few features I don’t need, some UI/UX quirks, and - most importantly - the absence of a dark theme pushed me to vibe-code my own version: **Sayso**.
+I like using [Meetily](https://github.com/Zackriya-Solutions/meetily), but the lack of [Cohere](https://cohere.com/) support, a few features I don’t need, some UI/UX quirks, and - most importantly - the absence of a dark theme pushed me to vibe-code my own version: **Sayso**.
 
 I built this primarily for personal use, but if anyone else finds it useful, feel free to use it, fork it, or suggest improvements.
 
-Built with a Rust desktop shell & UI (Tauri 2 + Vite/TypeScript) and a Python backend with Silero VAD and nano-cohere-transcribe. On my GPU (RTX 4070 12GB VRAM), the RTFx factor was 100-200 (~180 seconds of audio transcribed in 1 second of GPU time), while reaching very good word error rate (compare to e.g. whisper).
+Built with a Rust desktop shell & UI ([Tauri 2](https://v2.tauri.app/) + Vite/TypeScript) and a Python backend with [Silero VAD](https://github.com/snakers4/silero-vad) and [nano-cohere-transcribe](https://github.com/Deep-unlearning/nano-cohere-transcribe). On my GPU (RTX 4070 12GB VRAM), the RTFx factor was 100-200 (~180 seconds of audio transcribed in 1 second of GPU time), while reaching very good word error rate (compare to e.g. [Whisper](https://github.com/openai/whisper)).
+
+This theoretically should work with 6-8GB VRAM GPUs too. But lower GPUs probably aren't enough. It can transcribe on CPU, but will be quite slow.
 
 ---
 
@@ -14,20 +16,20 @@ Built with a Rust desktop shell & UI (Tauri 2 + Vite/TypeScript) and a Python ba
 
 ### Prerequisites
 
-- **Python 3.10+** (with `torch`, `silero-vad`, `pyaudiowpatch`, `nano-cohere-transcribe`)
-- **Node.js 18+** & `npm`
-- **Rust toolchain** (for compiling Tauri desktop binary)
+- **Python 3.10+** (with [`torch`](https://pytorch.org/), [`silero-vad`](https://github.com/snakers4/silero-vad), [`pyaudiowpatch`](https://github.com/s0d3s/PyAudioWPatch), [`nano-cohere-transcribe`](https://github.com/Deep-unlearning/nano-cohere-transcribe))
+- **Node.js 18+** & **npm**
+- **Rust toolchain** (for compiling the [Tauri](https://v2.tauri.app/) desktop binary)
 
 ### Running the App
 
-Double-click [`start.bat`](file:///D:/projects/transcriber/start.bat) or run:
+Double-click `start.bat` or run:
 
 ```cmd
 start.bat
 ```
 
 This will:
-1. Verify Python and launch the backend server on `127.0.0.1:8765`.
+1. Verify Python and launch the backend server on `127.0.0.1:48653`.
 2. Install frontend dependencies if needed (`npm install`).
 3. Launch the native Tauri 2 desktop app.
 
@@ -40,7 +42,7 @@ start-web.bat
 
 ## Running Tests
 
-Execute [`test.bat`](file:///D:/projects/transcriber/test.bat):
+Execute `test.bat`:
 
 ```cmd
 test.bat

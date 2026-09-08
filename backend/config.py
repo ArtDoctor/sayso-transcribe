@@ -25,7 +25,7 @@ if IS_PORTABLE:
 
 # Server Config
 HOST = "127.0.0.1"
-PORT = 8765
+PORT = 48653
 
 # Audio Configuration
 SAMPLE_RATE = 16000  # 16 kHz mono required by Silero VAD and Cohere

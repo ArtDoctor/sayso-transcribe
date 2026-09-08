@@ -16,7 +16,7 @@ try {
 # Check if Python backend is already active
 $backendUp = $false
 try {
-    $res = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 1 -ErrorAction SilentlyContinue
+    $res = Invoke-RestMethod -Uri "http://127.0.0.1:48653/api/status" -TimeoutSec 1 -ErrorAction SilentlyContinue
     if ($res.status -eq "online") { $backendUp = $true }
 } catch {}
 
@@ -28,16 +28,16 @@ if (-not $backendUp) {
     for ($i = 0; $i -lt 20; $i++) {
         Start-Sleep -Milliseconds 500
         try {
-            $testRes = Invoke-RestMethod -Uri "http://127.0.0.1:8765/api/status" -TimeoutSec 1 -ErrorAction SilentlyContinue
+            $testRes = Invoke-RestMethod -Uri "http://127.0.0.1:48653/api/status" -TimeoutSec 1 -ErrorAction SilentlyContinue
             if ($testRes.status -eq "online") {
                 $backendUp = $true
-                Write-Host "[OK] Python backend is online on 127.0.0.1:8765." -ForegroundColor Green
+                Write-Host "[OK] Python backend is online on 127.0.0.1:48653." -ForegroundColor Green
                 break
             }
         } catch {}
     }
 } else {
-    Write-Host "[OK] Python backend is already active on port 8765." -ForegroundColor Green
+    Write-Host "[OK] Python backend is already active on port 48653." -ForegroundColor Green
 }
 
 # Check node_modules

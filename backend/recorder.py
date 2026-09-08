@@ -1,5 +1,4 @@
 import time
-import uuid
 import logging
 import threading
 from typing import Optional, Dict, Any, Callable, List
@@ -111,7 +110,7 @@ class AudioRecorder:
             )
             if mode == "mic_and_system":
                 self._system_segmenter = PhraseSegmenter(
-                    stream_name="System / Remote",
+                    stream_name="Them",
                     on_phrase_completed=self._handle_phrase_completed,
                 )
             else:
@@ -210,7 +209,6 @@ class AudioRecorder:
 
     def _handle_phrase_completed(self, stream_name: str, start_time: float, end_time: float, audio_np: np.ndarray):
         if self.on_phrase_ready and self.session_id:
-            phrase_id = f"p_{int(start_time*1000)}_{uuid.uuid4().hex[:4]}"
             self.on_phrase_ready(self.session_id, stream_name, start_time, end_time, audio_np)
 
     def _capture_mic_worker(self, device_index: Optional[int]):

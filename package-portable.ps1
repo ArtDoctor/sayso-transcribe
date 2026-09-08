@@ -5,6 +5,7 @@ param(
     [string]$PythonRuntime = "",
     [switch]$NoModel,
     [switch]$SkipBuild,
+    # Kept for compatibility; normal runs now replace the package automatically.
     [switch]$Clean,
     [switch]$ValidateOnly
 )
@@ -104,6 +105,8 @@ function Install-EmbeddedPython([string]$Destination) {
     Invoke-WebRequest -Uri "https://bootstrap.pypa.io/get-pip.py" -OutFile $getPip
     Invoke-Checked $python @($getPip, "--disable-pip-version-check")
     Invoke-Checked $python @("-m", "pip", "install", "--disable-pip-version-check", "--upgrade", "pip", "setuptools", "wheel")
+    Write-Host "Installing Sayso backend dependencies..." -ForegroundColor Cyan
+    Invoke-Checked $python @("-m", "pip", "install", "--disable-pip-version-check", "-r", $Requirements)
 
     Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue
@@ -157,11 +160,11 @@ if ($ValidateOnly) {
     exit 0
 }
 
-if ($Clean -and (Test-Path -LiteralPath $OutputRoot)) {
-    Remove-Item -LiteralPath $OutputRoot -Recurse -Force
-}
+# Always rebuild the package from scratch. Keep the output root itself so a
+# custom output root can contain other files or package directories.
 if (Test-Path -LiteralPath $AppDir) {
-    throw "Output already exists: $AppDir. Use -Clean to replace it."
+    Write-Host "Removing existing package: $AppDir" -ForegroundColor Yellow
+    Remove-Item -LiteralPath $AppDir -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
 

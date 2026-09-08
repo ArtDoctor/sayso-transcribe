@@ -35,7 +35,7 @@ fn local_python(root: &PathBuf) -> Option<PathBuf> {
 }
 
 fn ensure_backend_running() {
-    let addr = "127.0.0.1:8765";
+    let addr = "127.0.0.1:48653";
     if TcpStream::connect_timeout(&addr.parse().unwrap(), Duration::from_millis(250)).is_ok() {
         println!("[Tauri] Backend is already running on {}.", addr);
         return;

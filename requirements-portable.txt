@@ -1,6 +1,7 @@
 # Runtime dependencies installed into the embedded Windows Python runtime.
-# PyTorch's Windows wheel includes CUDA runtime libraries when pip selects the
-# CUDA-enabled build; CPU-only machines still work through torch's CPU fallback.
+# Use the matching CUDA 12.6 wheels so packaged builds can use NVIDIA GPUs.
+# The CUDA wheel also supports CPU execution when no NVIDIA GPU is available.
+--extra-index-url https://download.pytorch.org/whl/cu126
 fastapi>=0.115,<1
 uvicorn[standard]>=0.34,<1
 pydantic>=2.9,<3
@@ -8,7 +9,9 @@ numpy>=2.0,<3
 soundfile>=0.13,<1
 huggingface_hub>=0.27,<2
 tqdm>=4.66,<5
-torch>=2.2,<3
-nano-cohere-transcribe>=0.1,<1
+torch==2.11.0+cu126
+torchaudio==2.11.0+cu126
+# The project is not published on PyPI; install the tested source revision.
+nano_cohere_transcribe @ https://github.com/Deep-unlearning/nano-cohere-transcribe/archive/f8e1cd94554a812f35d56dbdc42c461c681da774.zip
 silero-vad>=5,<7
 PyAudioWPatch>=0.2.12,<1

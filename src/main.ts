@@ -45,7 +45,9 @@ const activeSessionModeBadge = document.getElementById("active-session-mode-badg
 const vadBar1 = document.getElementById("vad-bar-1") as HTMLElement;
 const vadBar2 = document.getElementById("vad-bar-2") as HTMLElement;
 const vadBar3 = document.getElementById("vad-bar-3") as HTMLElement;
-const barSystemLevel = document.getElementById("bar-system-level") as HTMLElement;
+const systemVadBar1 = document.getElementById("system-vad-bar-1") as HTMLElement;
+const systemVadBar2 = document.getElementById("system-vad-bar-2") as HTMLElement;
+const systemVadBar3 = document.getElementById("system-vad-bar-3") as HTMLElement;
 const badgeMicSpeech = document.getElementById("badge-mic-speech") as HTMLElement;
 const badgeSystemSpeech = document.getElementById("badge-system-speech") as HTMLElement;
 const meterCardSystem = document.getElementById("meter-card-system") as HTMLElement;
@@ -125,6 +127,7 @@ let deletingSessionId: string | null = null;
 
 let currentSessionId: string | null = null;
 let activeViewingSession: RecordingSession | null = null;
+const livePhraseCards = new Map<string, HTMLElement>();
 
 // Initialize Application
 async function initApp() {
@@ -178,6 +181,8 @@ async function initApp() {
 function handleWebSocketMessage(msg: any) {
   if (msg.type === "vad_meter") {
     handleVadMeter(msg);
+  } else if (msg.type === "phrase_pending") {
+    handlePhrasePending(msg.phrase);
   } else if (msg.type === "phrase_transcribed") {
     handlePhraseTranscribed(msg.phrase);
   } else if (msg.type === "model_status") {
@@ -201,67 +206,101 @@ function handleWebSocketMessage(msg: any) {
   }
 }
 
+function updateVadBars(bars: HTMLElement[], rms: number, isSpeaking: boolean) {
+  if (isSpeaking) {
+    // Keep the same three-bar visual treatment for microphone and computer audio.
+    const h1 = Math.min(100, Math.max(50, Math.round(55 + rms * 100)));
+    const h2 = Math.min(100, Math.max(80, Math.round(80 + rms * 60)));
+    const h3 = Math.min(100, Math.max(60, Math.round(65 + rms * 80)));
+    [h1, h2, h3].forEach((height, index) => {
+      bars[index].style.height = `${height}%`;
+      bars[index].classList.add("speaking");
+    });
+  } else {
+    bars.forEach((bar) => {
+      bar.style.height = "4px";
+      bar.classList.remove("speaking");
+    });
+  }
+}
+
 function handleVadMeter(payload: any) {
   if (!isRecording) return;
 
   const micRms = Math.min(1, Math.max(0, payload.mic?.rms || 0));
+  const systemRms = Math.min(1, Math.max(0, payload.system?.rms || 0));
   const isMicSpeaking = !!payload.mic?.is_speaking;
-  const sysRms = Math.min(100, (payload.system?.rms || 0) * 100);
+  const isSystemSpeaking = !!payload.system?.is_speaking;
 
-  if (isMicSpeaking) {
-    // 3 white vertical bars smoothly expand all the way up when voice detected
-    const h1 = Math.min(100, Math.max(50, Math.round(55 + micRms * 100)));
-    const h2 = Math.min(100, Math.max(80, Math.round(80 + micRms * 60)));
-    const h3 = Math.min(100, Math.max(60, Math.round(65 + micRms * 80)));
-    vadBar1.style.height = `${h1}%`;
-    vadBar2.style.height = `${h2}%`;
-    vadBar3.style.height = `${h3}%`;
-    vadBar1.classList.add("speaking");
-    vadBar2.classList.add("speaking");
-    vadBar3.classList.add("speaking");
-    badgeMicSpeech.className = "speech-state speaking";
-    badgeMicSpeech.textContent = "VOICE";
-  } else {
-    // Down when silent
-    vadBar1.style.height = "4px";
-    vadBar2.style.height = "4px";
-    vadBar3.style.height = "4px";
-    vadBar1.classList.remove("speaking");
-    vadBar2.classList.remove("speaking");
-    vadBar3.classList.remove("speaking");
-    badgeMicSpeech.className = "speech-state";
-    badgeMicSpeech.textContent = "SILENT";
-  }
+  updateVadBars([vadBar1, vadBar2, vadBar3], micRms, isMicSpeaking);
+  badgeMicSpeech.className = isMicSpeaking ? "speech-state speaking" : "speech-state";
+  badgeMicSpeech.textContent = isMicSpeaking ? "VOICE" : "SILENT";
 
-  if (barSystemLevel) {
-    barSystemLevel.style.width = `${sysRms}%`;
-  }
+  updateVadBars([systemVadBar1, systemVadBar2, systemVadBar3], systemRms, isSystemSpeaking);
+  badgeSystemSpeech.className = isSystemSpeaking ? "speech-state speaking" : "speech-state";
+  badgeSystemSpeech.textContent = isSystemSpeaking ? "VOICE" : "SILENT";
+}
 
-  if (payload.system?.is_speaking) {
-    badgeSystemSpeech.className = "speech-state speaking";
-    badgeSystemSpeech.textContent = "VOICE";
-  } else {
-    badgeSystemSpeech.className = "speech-state";
-    badgeSystemSpeech.textContent = "SILENT";
-  }
+function speakerLabelForPhrase(phrase: Phrase): string {
+  const speaker = (phrase.speaker || "").trim().toLowerCase();
+  return ["system audio", "system / remote", "system", "remote", "them"].includes(speaker) ? "Them" : "You";
+}
+
+function scrollLivePhrasesToBottom() {
+  window.requestAnimationFrame(() => {
+    livePhrasesList.scrollTo({ top: livePhrasesList.scrollHeight, behavior: "smooth" });
+  });
+}
+
+function handlePhrasePending(phrase: Phrase) {
+  if (!phrase || !phrase.phrase_id || (phrase.session_id && phrase.session_id !== currentSessionId)) return;
+  emptyPhrasesHint.classList.add("hidden");
+
+  // WebSocket reconnects can deliver an event more than once; keep one row per phrase.
+  if (livePhraseCards.has(phrase.phrase_id)) return;
+
+  const phraseCard = document.createElement("div");
+  phraseCard.className = "phrase-card phrase-card-skeleton";
+  phraseCard.dataset.phraseId = phrase.phrase_id;
+  phraseCard.setAttribute("aria-busy", "true");
+  phraseCard.setAttribute("aria-label", `${speakerLabelForPhrase(phrase)} phrase is being transcribed`);
+
+  const duration = Math.max(0.5, Number(phrase.duration) || 0.5);
+  const lineCount = duration >= 3.5 ? 3 : 2;
+  const widths = lineCount === 3 ? ["92%", "76%", "48%"] : ["88%", "58%"];
+  const skeletonLines = widths
+    .map((width) => `<span class="phrase-skeleton-line" style="width: ${width}"></span>`)
+    .join("");
+  phraseCard.innerHTML = `
+    <span class="phrase-speaker">${escapeHtml(speakerLabelForPhrase(phrase))}:</span>
+    <span class="phrase-skeleton-text" aria-hidden="true">${skeletonLines}</span>
+  `;
+
+  livePhraseCards.set(phrase.phrase_id, phraseCard);
+  livePhrasesList.appendChild(phraseCard);
+  scrollLivePhrasesToBottom();
 }
 
 function handlePhraseTranscribed(phrase: Phrase) {
-  if (!phrase || (phrase.session_id && phrase.session_id !== currentSessionId)) return;
+  if (!phrase || !phrase.phrase_id || (phrase.session_id && phrase.session_id !== currentSessionId)) return;
   emptyPhrasesHint.classList.add("hidden");
 
   if (phrase.error) showMessage(`A speech segment could not be transcribed: ${phrase.error}`, true);
-  const phraseCard = document.createElement("div");
+  const phraseCard = livePhraseCards.get(phrase.phrase_id) || document.createElement("div");
+  const wasPending = phraseCard.classList.contains("phrase-card-skeleton");
   phraseCard.className = `phrase-card${phrase.error ? " error" : ""}`;
+  phraseCard.dataset.phraseId = phrase.phrase_id;
+  phraseCard.removeAttribute("aria-busy");
+  phraseCard.setAttribute("aria-label", `${speakerLabelForPhrase(phrase)}: ${phrase.text || "This segment could not be transcribed."}`);
 
-  const speakerLabel = phrase.speaker === "System Audio" ? "System" : "You";
   phraseCard.innerHTML = `
-    <span class="phrase-speaker">${escapeHtml(speakerLabel)}:</span>
-    <span class="phrase-text">${escapeHtml(phrase.text || "This segment could not be transcribed.")}</span>
+    <span class="phrase-speaker">${escapeHtml(speakerLabelForPhrase(phrase))}:</span>
+    <span class="phrase-text${wasPending ? " phrase-text-revealed" : ""}">${escapeHtml(phrase.text || "This segment could not be transcribed.")}</span>
   `;
 
-  livePhrasesList.appendChild(phraseCard);
-  livePhrasesList.scrollTop = livePhrasesList.scrollHeight;
+  if (!phraseCard.parentElement) livePhrasesList.appendChild(phraseCard);
+  livePhraseCards.set(phrase.phrase_id, phraseCard);
+  scrollLivePhrasesToBottom();
 }
 
 function showRecordingError(error: string) {
@@ -740,6 +779,7 @@ function enterRecording(modeLabel: string, resetPhrases: boolean, elapsedSeconds
   btnStopRecording.disabled = false;
   btnStopRecording.textContent = "Stop Recording";
   if (resetPhrases) {
+    livePhraseCards.clear();
     livePhrasesList.innerHTML = "";
     emptyPhrasesHint.classList.remove("hidden");
     livePhrasesList.appendChild(emptyPhrasesHint);
@@ -760,13 +800,9 @@ function leaveRecording() {
   recordingTimerInterval = null;
   activeRecordingScreen.classList.add("hidden");
   idleScreen.classList.remove("hidden");
-  vadBar1.style.height = "4px";
-  vadBar2.style.height = "4px";
-  vadBar3.style.height = "4px";
-  vadBar1.classList.remove("speaking");
-  vadBar2.classList.remove("speaking");
-  vadBar3.classList.remove("speaking");
-  if (barSystemLevel) barSystemLevel.style.width = "0%";
+  livePhraseCards.clear();
+  updateVadBars([vadBar1, vadBar2, vadBar3], 0, false);
+  updateVadBars([systemVadBar1, systemVadBar2, systemVadBar3], 0, false);
   btnStopRecording.disabled = false;
   btnStopRecording.textContent = "Stop Recording";
   btnStopRecording.removeAttribute("aria-busy");
@@ -947,7 +983,7 @@ function renderInteractivePhrases(session: RecordingSession) {
     const row = document.createElement("div");
     row.className = "interactive-phrase-row";
 
-    const speakerLabel = phrase.speaker === "System Audio" ? "System" : "You";
+    const speakerLabel = speakerLabelForPhrase(phrase);
 
     row.innerHTML = `
       <button type="button" class="interactive-phrase-time" title="Jump to ${formatSeconds(phrase.start_time)} in audio">[${formatSeconds(phrase.start_time)}]</button>
@@ -1158,7 +1194,7 @@ function setupHistoryActions() {
     if (!activeViewingSession) return;
     const text = activeViewingSession.final_transcript
       ? activeViewingSession.final_transcript
-      : (activeViewingSession.phrases || []).map((p) => `${p.speaker}: ${p.text}`).join("\n");
+      : (activeViewingSession.phrases || []).map((p) => `${speakerLabelForPhrase(p)}: ${p.text}`).join("\n");
     if (!text.trim()) {
       showMessage("There is no transcript to copy yet.", true);
       return;
@@ -1179,7 +1215,7 @@ function setupHistoryActions() {
       text += `--- Full Transcript ---\n${activeViewingSession.final_transcript}\n\n`;
     }
     if (activeViewingSession.phrases && activeViewingSession.phrases.length > 0) {
-      text += `--- Phrases ---\n` + activeViewingSession.phrases.map((p) => `[${formatSeconds(p.start_time)}] ${p.speaker}: ${p.text}`).join("\n");
+      text += `--- Phrases ---\n` + activeViewingSession.phrases.map((p) => `[${formatSeconds(p.start_time)}] ${speakerLabelForPhrase(p)}: ${p.text}`).join("\n");
     }
     downloadFile(`${activeViewingSession.id}.txt`, text, "text/plain");
   });

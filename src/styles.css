@@ -638,6 +638,7 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+  scroll-behavior: smooth;
 }
 
 .phrases-stream {
@@ -663,6 +664,48 @@ body {
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   font-size: 17px;
   line-height: 1.6;
+  animation: phrase-card-in 0.28s ease-out both;
+}
+
+.phrase-card-skeleton {
+  min-height: 72px;
+}
+
+.phrase-skeleton-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 5px 0;
+}
+
+.phrase-skeleton-line {
+  display: block;
+  height: 11px;
+  border-radius: 6px;
+  background: linear-gradient(100deg, #242424 20%, #444444 40%, #242424 60%);
+  background-size: 220% 100%;
+  animation: skeleton-shimmer 1.35s ease-in-out infinite;
+}
+
+.phrase-text-revealed {
+  animation: phrase-text-in 0.32s ease-out both;
+}
+
+@keyframes phrase-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes skeleton-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@keyframes phrase-text-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .phrase-speaker {

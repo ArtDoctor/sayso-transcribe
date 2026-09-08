@@ -14,8 +14,16 @@ describe("ApiClient", () => {
 
   it("constructs an encoded audio URL", () => {
     const client = new ApiClient();
-    expect(client.getAudioUrl("sess_123")).toBe("http://127.0.0.1:8765/api/recordings/sess_123/audio");
+    expect(client.getAudioUrl("sess_123")).toBe("http://127.0.0.1:48653/api/recordings/sess_123/audio");
     expect(client.getAudioUrl("sess space")).toContain("sess%20space/audio");
+  });
+
+  it("uses the backend directly from the Tauri production origin", () => {
+    vi.stubGlobal("window", {
+      location: { protocol: "http:", hostname: "tauri.localhost", host: "tauri.localhost", port: "80" },
+    });
+    const client = new ApiClient();
+    expect(client.getAudioUrl("sess_123")).toBe("http://127.0.0.1:48653/api/recordings/sess_123/audio");
   });
 
   it("surfaces backend detail for a failed mutation", async () => {
@@ -48,7 +56,7 @@ describe("ApiClient", () => {
 
     await expect(new ApiClient().getStatus()).resolves.toMatchObject({ status: "online" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(String(fetchMock.mock.calls[1][0])).toContain("localhost:8765/api/status");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("localhost:48653/api/status");
   });
 
   it("exposes model lifecycle actions", () => {

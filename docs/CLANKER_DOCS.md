@@ -52,7 +52,7 @@ sayso/ (transcriber)
   - `run_high_quality_pass()` reports progress via `on_hq_progress(processed, total, session_id)` callback.
   - WebSocket broadcasts `hq_pass_progress` events with `session_id`, `processed_chunks`, `total_chunks`, and `percent`.
   - Frontend displays `#hq-progress-modal` with a progress bar and automatically navigates to the session in History upon `hq_pass_completed`.
-- **Process Hygiene**: Do not leave the backend (`python -m backend.main`), dev server (`npm run dev`), or Tauri host running upon task completion. Ensure port 8765 is closed.
+- **Process Hygiene**: Do not leave the backend (`python -m backend.main`), dev server (`npm run dev`), or Tauri host running upon task completion. Ensure port 48653 is closed.
 
 ## Reliability and UI State Contracts
 
@@ -63,15 +63,16 @@ sayso/ (transcriber)
   - Yellow (`.status-warn`): model loading, downloading, or transcribing.
   - Red (`.status-bad` / `.status-offline`): backend offline or model error / not downloaded.
   - Clicking opens `#diagnostics-popover` detailing backend connectivity, model status, compute device (CUDA / CPU), selected audio inputs, and active session.
-- **3-Bar VAD Visualizer**: Replaced horizontal progress meter with 3 white vertical bars (`#vad-bar-1..3`) that smoothly expand upward when speech is detected and contract down to 4px when silent.
+- **3-Bar VAD Visualizer**: Replaced horizontal progress meters with matching 3 white vertical bars for microphone (`#vad-bar-1..3`) and computer/system audio (`#system-vad-bar-1..3`) that smoothly expand upward when speech is detected and contract down to 4px when silent.
 - **Phrase Presentation & Auto-Save**:
-  - Live phrases during recording display as clean `You: <phrase>` rows without timestamps.
+  - Live phrases during recording display as clean `You: <phrase>` or `Them: <phrase>` rows without timestamps; microphone audio is `You` and computer/system audio is `Them`.
   - History transcript displays as a continuous list of phrases (`[timestamp] You: phrase`) without card borders, with auto-resizing textareas that expand naturally without nested scrollbars.
   - Session title editing auto-saves immediately on blur and debounced (600ms) on typing, without requiring an explicit Save button.
 - A stopped session is durably marked `processing_hq` before HQ inference is dispatched. Completion/failure is committed only when the callback's `job_id` still owns that session. A transcript edited after the job starts is not overwritten by its late result.
 - Only one HQ job per session can be reserved. Re-transcription is rejected while recording, while its session already has an HQ job, or while the model is not downloaded.
 - STT failures never create simulated/fabricated transcript text. Phrase events include an `error` and the UI keeps the segment visibly retryable via the post-recording HQ pass.
 - Frontend long operations expose disabled and `aria-busy` controls, inline progress/status messages, recoverable history/detail loading states, and processing/error states. UI state is reconciled by both WebSocket events and a non-overlapping status poll.
+- Phrase lifecycle events are ordered as `phrase_pending` (audio segment completed, before STT queueing) followed by `phrase_transcribed`. Both carry the same `phrase_id`, allowing the frontend to render an animated skeleton and replace it in place without duplicate rows. Pending phrases are UI-only and are not persisted until transcription returns.
 - Saved device/language settings live in `localStorage` under `sayso.settings`.
 - Tests set `SAYSO_DISABLE_MODEL_AUTOLOAD=1` in `tests/conftest.py`. Backend tests must use fake models and simulated audio; they must never download/load the real model or require audio hardware.
 
@@ -94,11 +95,18 @@ run. The package output is deliberately not listed in `.gitignore`.
 
 A normal build requires network access for the embedded Python archive, pip
 packages, and (unless `-NoModel` is used) the local Hugging Face model cache.
+The `nano_cohere_transcribe` dependency is installed from a pinned GitHub
+source revision because it is not published on PyPI. PyTorch and torchaudio are
+pinned to matching CUDA 12.6 wheels from the PyTorch index so packaged NVIDIA
+builds expose CUDA to the backend; the backend selects `cuda` whenever
+`torch.cuda.is_available()` is true.
 The script uses the cache under `$env:HF_HUB_CACHE`, `$env:HF_HOME/hub`, or the
 standard `%USERPROFILE%\\.cache\\huggingface\\hub` location. Run
-`powershell -ExecutionPolicy Bypass -File .\\package-portable.ps1 -Clean` on a
-Windows x64 development machine. `-ValidateOnly` checks the packaging inputs
-without building or copying large artifacts.
+`powershell -ExecutionPolicy Bypass -File .\\package-portable.ps1` on a Windows x64
+development machine. Each normal run removes and recreates the existing
+`Sayso-Portable/Sayso` package automatically; `-Clean` remains accepted for
+backward compatibility. `-ValidateOnly` checks the packaging inputs without
+building or copying large artifacts.
 
 The native host first looks for `python\\pythonw.exe` beside the packaged
 executable, sets `HF_HOME`, `HF_HUB_CACHE`, and `TORCH_HOME` below `models/`,

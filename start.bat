@@ -7,7 +7,7 @@ echo ===================================================
 echo.
 
 REM Start Python backend in background (no console window) if not already running
-curl.exe -s http://127.0.0.1:8765/api/status >nul 2>&1
+curl.exe -s http://127.0.0.1:48653/api/status >nul 2>&1
 if errorlevel 1 (
     echo [*] Starting Python backend in background (logging to logs.txt)...
     where pythonw >nul 2>&1
@@ -19,7 +19,7 @@ if errorlevel 1 (
 
     echo [*] Waiting for Python backend to initialize...
     for /L %%i in (1,1,20) do (
-        curl.exe -s http://127.0.0.1:8765/api/status >nul 2>&1
+        curl.exe -s http://127.0.0.1:48653/api/status >nul 2>&1
         if not errorlevel 1 goto backend_ready
         ping 127.0.0.1 -n 2 >nul
     )
@@ -27,7 +27,7 @@ if errorlevel 1 (
 )
 
 :backend_ready
-echo [OK] Python backend active on 127.0.0.1:8765.
+echo [OK] Python backend active on 127.0.0.1:48653.
 echo.
 
 REM Install dependencies if needed
