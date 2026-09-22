@@ -1,4 +1,9 @@
 import { api, BackendStatus, RecordingSession, Phrase, ModelDownloadProgress } from "./api.ts";
+import {
+  buildFinalTranscriptFromPhrases,
+  parseTranscriptBlocks,
+  reconcilePhrases,
+} from "./transcript-sync.ts";
 import { invoke } from "@tauri-apps/api/core";
 
 // Window & Titlebar Controls
@@ -11,9 +16,26 @@ const winRestoreIcon = document.getElementById("win-restore-icon") as HTMLElemen
 
 // DOM Elements
 const tabRecord = document.getElementById("tab-record") as HTMLButtonElement;
+const tabUpload = document.getElementById("tab-upload") as HTMLButtonElement;
 const tabHistory = document.getElementById("tab-history") as HTMLButtonElement;
 const viewRecord = document.getElementById("view-record") as HTMLElement;
+const viewUpload = document.getElementById("view-upload") as HTMLElement;
 const viewHistory = document.getElementById("view-history") as HTMLElement;
+
+// Upload Elements
+const ffmpegAlertBanner = document.getElementById("ffmpeg-alert-banner") as HTMLElement | null;
+const uploadDropzone = document.getElementById("upload-dropzone") as HTMLElement | null;
+const uploadFileInput = document.getElementById("upload-file-input") as HTMLInputElement | null;
+const uploadFileDetails = document.getElementById("upload-file-details") as HTMLElement | null;
+const selectedFileName = document.getElementById("selected-file-name") as HTMLElement | null;
+const selectedFileSize = document.getElementById("selected-file-size") as HTMLElement | null;
+const btnRemoveFile = document.getElementById("btn-remove-file") as HTMLButtonElement | null;
+const uploadTitleInput = document.getElementById("upload-title-input") as HTMLInputElement | null;
+const uploadLanguageSelect = document.getElementById("upload-language-select") as HTMLSelectElement | null;
+const btnSubmitUpload = document.getElementById("btn-submit-upload") as HTMLButtonElement | null;
+const uploadProgressCard = document.getElementById("upload-progress-card") as HTMLElement | null;
+const uploadProgressBar = document.getElementById("upload-progress-bar") as HTMLElement | null;
+const uploadStatusText = document.getElementById("upload-status-text") as HTMLElement | null;
 
 // Status & Diagnostics (Sidebar)
 const btnStatusIndicator = document.getElementById("btn-status-indicator") as HTMLButtonElement;
@@ -28,6 +50,8 @@ const diagSystemVal = document.getElementById("diag-system-val") as HTMLElement;
 const diagSessionVal = document.getElementById("diag-session-val") as HTMLElement;
 const recordingsCountSpan = document.getElementById("recordings-count") as HTMLElement;
 const btnOpenSettings = document.getElementById("btn-open-settings") as HTMLButtonElement;
+const sidebarLangFlag = document.getElementById("sidebar-lang-flag") as HTMLElement | null;
+const sidebarLangSelect = document.getElementById("sidebar-language-select") as HTMLSelectElement | null;
 
 // Recording Idle View & Model Gate
 const idleScreen = document.getElementById("idle-screen") as HTMLElement;
@@ -51,6 +75,7 @@ const btnStopRecording = document.getElementById("btn-stop-recording") as HTMLBu
 // Active Recording Elements
 const activeTimer = document.getElementById("active-timer") as HTMLElement;
 const activeSessionModeBadge = document.getElementById("active-session-mode-badge") as HTMLElement;
+const recModelStatus = document.getElementById("rec-model-status") as HTMLElement | null;
 const vadBar1 = document.getElementById("vad-bar-1") as HTMLElement;
 const vadBar2 = document.getElementById("vad-bar-2") as HTMLElement;
 const vadBar3 = document.getElementById("vad-bar-3") as HTMLElement;
@@ -81,9 +106,15 @@ const finalTranscriptCard = document.getElementById("final-transcript-card") as 
 const finalTranscriptText = document.getElementById("final-transcript-text") as HTMLTextAreaElement;
 const transcriptHqStatus = document.getElementById("transcript-hq-status") as HTMLElement;
 const appStatusMessage = document.getElementById("app-status-message") as HTMLElement;
+const modelLoadingPopup = document.getElementById("model-loading-popup") as HTMLElement | null;
+const globalErrorPopup = document.getElementById("global-error-popup") as HTMLElement | null;
+const globalErrorText = document.getElementById("global-error-text") as HTMLElement | null;
+const btnCopyError = document.getElementById("btn-copy-error") as HTMLButtonElement | null;
+const btnCloseError = document.getElementById("btn-close-error") as HTMLButtonElement | null;
 const btnCopyTranscript = document.getElementById("btn-copy-transcript") as HTMLButtonElement;
 const btnDownloadTxt = document.getElementById("btn-download-txt") as HTMLButtonElement;
 const btnDownloadSrt = document.getElementById("btn-download-srt") as HTMLButtonElement;
+const btnOpenFolder = document.getElementById("btn-open-folder") as HTMLButtonElement;
 const btnDeleteSession = document.getElementById("btn-delete-session") as HTMLButtonElement;
 
 // HQ Retranscription Modal Elements
@@ -114,8 +145,11 @@ const selectLanguage = document.getElementById("select-language") as HTMLSelectE
 const settingsModelStatusText = document.getElementById("settings-model-status-text") as HTMLElement;
 
 // State Variables
+let selectedMicName: string = "";
+let selectedSystemName: string = "";
 let selectedMicIndex: number = -1; // -1 means Windows Default
 let selectedSystemIndex: number = -1; // -1 means Windows Default
+let selectedUploadFile: File | null = null;
 let selectedLanguage = "en";
 let currentModelStatus: string = "not_downloaded";
 let latestStatus: BackendStatus | null = null;
@@ -134,6 +168,7 @@ let recordingStartTime = 0;
 let lastRecordingError: string | null = null;
 let retranscribeRequestInFlight = false;
 let transcriptSavingSessionId: string | null = null;
+let finalTranscriptDebounceTimer: number | null = null;
 let deletingSessionId: string | null = null;
 
 let currentSessionId: string | null = null;
@@ -141,11 +176,55 @@ let activeViewingSession: RecordingSession | null = null;
 let lastEditedTranscriptSource: "final_transcript" | "phrases" | null = null;
 const livePhraseCards = new Map<string, HTMLElement>();
 
-let activeSpeakingCardYou: HTMLElement | null = null;
+let activeSpeakingCardMe: HTMLElement | null = null;
 let activeSpeakingCardThem: HTMLElement | null = null;
-let speakingCardTimerYou: number | null = null;
+let speakingCardTimerMe: number | null = null;
 let speakingCardTimerThem: number | null = null;
 let splashDismissed = false;
+
+const LANG_FLAGS: Record<string, string> = {
+  en: "🇺🇸",
+  de: "🇩🇪",
+  fr: "🇫🇷",
+  es: "🇪🇸",
+  it: "🇮🇹",
+  pt: "🇵🇹",
+  nl: "🇳🇱",
+  pl: "🇵🇱",
+  el: "🇬🇷",
+  ar: "🇸🇦",
+  ja: "🇯🇵",
+  zh: "🇨🇳",
+  vi: "🇻🇳",
+  ko: "🇰🇷",
+};
+
+function updateLanguageUI(lang: string) {
+  selectedLanguage = lang;
+  if (sidebarLangSelect) sidebarLangSelect.value = lang;
+  if (sidebarLangFlag) sidebarLangFlag.textContent = LANG_FLAGS[lang] || "🌐";
+  if (selectLanguage) selectLanguage.value = lang;
+}
+
+async function changeLanguage(lang: string, notifyUser: boolean = true) {
+  updateLanguageUI(lang);
+  try {
+    const saved = JSON.parse(localStorage.getItem("sayso.settings") || "{}");
+    saved.language = lang;
+    localStorage.setItem("sayso.settings", JSON.stringify(saved));
+  } catch {}
+
+  if (isRecording) {
+    try {
+      await api.setRecordingLanguage(lang);
+      if (notifyUser) showMessage(`Transcription language switched to ${lang.toUpperCase()}`);
+    } catch (e: any) {
+      showMessage(`Could not switch language: ${e.message}`, true);
+    }
+  } else if (notifyUser) {
+    showMessage(`Language set to ${lang.toUpperCase()}`);
+  }
+}
 
 function dismissSplashScreen() {
   if (splashDismissed || !splashScreen) return;
@@ -154,13 +233,36 @@ function dismissSplashScreen() {
   splashScreen.classList.add("fade-out");
   window.setTimeout(() => {
     splashScreen.classList.add("hidden");
-  }, 450);
+  }, 180);
+}
+
+let startupSyncInFlight: Promise<void> | null = null;
+
+async function syncStartupState() {
+  if (startupSyncInFlight) return startupSyncInFlight;
+  startupSyncInFlight = (async () => {
+    try {
+      // Parallelize status and devices check
+      await Promise.all([refreshStatus(), refreshDevices()]);
+      if (backendOnline) {
+        dismissSplashScreen();
+        // Load past history in background without delaying user recording readiness
+        refreshHistory().catch((err) => console.warn("Background history load error:", err));
+      }
+    } catch (err) {
+      console.warn("Startup sync error:", err);
+    } finally {
+      startupSyncInFlight = null;
+    }
+  })();
+  return startupSyncInFlight;
 }
 
 // Initialize Application
 async function initApp() {
   loadSavedSettings();
   setupTabs();
+  setupUploadView();
   setupWindowControls();
   setupDiagnostics();
   setupHqModal();
@@ -169,15 +271,21 @@ async function initApp() {
   setupHistoryActions();
   setupModelDownloadAction();
 
+  let initialProbeTimer: number | null = null;
+  const stopInitialProbe = () => {
+    if (initialProbeTimer !== null) {
+      clearInterval(initialProbeTimer);
+      initialProbeTimer = null;
+    }
+  };
+
   // Connect WebSocket
   api.connectWebSocket(
     async () => {
       backendOnline = true;
+      stopInitialProbe();
       updateStatusCircleAndDiagnostics();
-      await refreshStatus();
-      await refreshDevices();
-      await refreshHistory();
-      dismissSplashScreen();
+      await syncStartupState();
     },
     () => {
       backendOnline = false;
@@ -189,36 +297,50 @@ async function initApp() {
   // Listen to WebSocket messages
   api.onWsMessage(handleWebSocketMessage);
 
-  // Initial load attempt (only if backend is already running)
-  await refreshStatus();
-  if (backendOnline) {
-    await refreshDevices();
-    await refreshHistory();
-    dismissSplashScreen();
-  }
+  // Fast initial status probes until backend is online or splash is dismissed
+  const initialProbe = async () => {
+    if (backendOnline && splashDismissed) {
+      stopInitialProbe();
+      return;
+    }
+    if (statusPollInFlight) return;
+    statusPollInFlight = true;
+    try {
+      await refreshStatus();
+      if (backendOnline) {
+        stopInitialProbe();
+        await syncStartupState();
+      }
+    } catch {
+      // Suppress connection errors during initial boot
+    } finally {
+      statusPollInFlight = false;
+    }
+  };
+
+  // Immediate probe
+  void initialProbe();
+  // Fast 150ms retry probes during cold boot
+  initialProbeTimer = window.setInterval(initialProbe, 150);
 
   // Safety fallback: ensure splash screen doesn't block UI indefinitely
   window.setTimeout(() => {
+    stopInitialProbe();
     if (!splashDismissed) {
       dismissSplashScreen();
     }
   }, 10000);
 
-  // Poll as a fallback for missed WebSocket events. Never overlap slow polls.
+  // Steady-state poll as a fallback for missed WebSocket events
   window.setInterval(async () => {
-    if (statusPollInFlight) return;
+    if (statusPollInFlight || !splashDismissed) return;
     statusPollInFlight = true;
     try {
       const wasOnline = backendOnline;
       await refreshStatus();
       if (backendOnline) {
-        if (!splashDismissed) {
-          await refreshDevices();
-          await refreshHistory();
-          dismissSplashScreen();
-        } else if (!wasOnline || selectMicDevice.children.length === 0) {
-          await refreshDevices();
-          await refreshHistory();
+        if (!wasOnline || selectMicDevice.children.length === 0) {
+          await Promise.all([refreshDevices(), refreshHistory()]);
         }
       }
     } finally {
@@ -239,6 +361,14 @@ function handleWebSocketMessage(msg: any) {
     updateModelStatus(msg.status, msg.error);
   } else if (msg.type === "model_download_progress") {
     updateDownloadProgress(msg.progress);
+  } else if (msg.type === "device_info_updated") {
+    if (latestStatus) {
+      latestStatus.device = msg.device;
+      latestStatus.cuda_device_name = msg.cuda_device_name;
+    }
+    updateStatusCircleAndDiagnostics();
+  } else if (msg.type === "recording_language_changed") {
+    if (msg.language) updateLanguageUI(msg.language);
   } else if (msg.type === "recording_started") {
     currentSessionId = msg.session?.id || currentSessionId;
     const modeLabel = msg.session?.mode === "mic_only" ? "Mic Only" : "Mic + System";
@@ -268,15 +398,13 @@ function updateVadBars(bars: HTMLElement[], rms: number, isSpeaking: boolean) {
     });
   } else {
     bars.forEach((bar) => {
-      bar.style.height = "4px";
+      bar.style.height = "20%";
       bar.classList.remove("speaking");
     });
   }
 }
 
 function handleVadMeter(payload: any) {
-  if (!isRecording) return;
-
   const micRms = Math.min(1, Math.max(0, payload.mic?.rms || 0));
   const systemRms = Math.min(1, Math.max(0, payload.system?.rms || 0));
   const isMicSpeaking = !!payload.mic?.is_speaking;
@@ -288,33 +416,33 @@ function handleVadMeter(payload: any) {
   updateVadBars([systemVadBar1, systemVadBar2, systemVadBar3], systemRms, isSystemSpeaking);
   if (labelSystem) labelSystem.classList.toggle("speaking", isSystemSpeaking);
 
-  manageSpeakingSkeleton("You", isMicSpeaking);
+  manageSpeakingSkeleton("Me", isMicSpeaking);
   manageSpeakingSkeleton("Them", isSystemSpeaking);
 }
 
-function manageSpeakingSkeleton(speaker: "You" | "Them", isSpeaking: boolean) {
-  if (speaker === "You") {
+function manageSpeakingSkeleton(speaker: "Me" | "Them", isSpeaking: boolean) {
+  if (speaker === "Me") {
     if (isSpeaking) {
-      if (speakingCardTimerYou) {
-        window.clearTimeout(speakingCardTimerYou);
-        speakingCardTimerYou = null;
+      if (speakingCardTimerMe) {
+        window.clearTimeout(speakingCardTimerMe);
+        speakingCardTimerMe = null;
       }
-      if (!activeSpeakingCardYou) {
-        activeSpeakingCardYou = createSpeakingSkeletonCard("You");
+      if (!activeSpeakingCardMe) {
+        activeSpeakingCardMe = createSpeakingSkeletonCard("Me");
         emptyPhrasesHint.classList.add("hidden");
-        livePhrasesList.prepend(activeSpeakingCardYou);
+        livePhrasesList.prepend(activeSpeakingCardMe);
         scrollLivePhrasesToTop();
       }
-    } else if (activeSpeakingCardYou && !speakingCardTimerYou) {
-      speakingCardTimerYou = window.setTimeout(() => {
-        if (activeSpeakingCardYou) {
-          activeSpeakingCardYou.remove();
-          activeSpeakingCardYou = null;
+    } else if (activeSpeakingCardMe && !speakingCardTimerMe) {
+      speakingCardTimerMe = window.setTimeout(() => {
+        if (activeSpeakingCardMe) {
+          activeSpeakingCardMe.remove();
+          activeSpeakingCardMe = null;
           if (livePhraseCards.size === 0 && !activeSpeakingCardThem) {
             emptyPhrasesHint.classList.remove("hidden");
           }
         }
-        speakingCardTimerYou = null;
+        speakingCardTimerMe = null;
       }, 2500);
     }
   } else {
@@ -334,7 +462,7 @@ function manageSpeakingSkeleton(speaker: "You" | "Them", isSpeaking: boolean) {
         if (activeSpeakingCardThem) {
           activeSpeakingCardThem.remove();
           activeSpeakingCardThem = null;
-          if (livePhraseCards.size === 0 && !activeSpeakingCardYou) {
+          if (livePhraseCards.size === 0 && !activeSpeakingCardMe) {
             emptyPhrasesHint.classList.remove("hidden");
           }
         }
@@ -344,7 +472,7 @@ function manageSpeakingSkeleton(speaker: "You" | "Them", isSpeaking: boolean) {
   }
 }
 
-function createSpeakingSkeletonCard(speaker: "You" | "Them"): HTMLElement {
+function createSpeakingSkeletonCard(speaker: "Me" | "Them"): HTMLElement {
   const card = document.createElement("div");
   card.className = "phrase-card phrase-card-skeleton live-speaking-skeleton";
   card.dataset.speaker = speaker;
@@ -362,13 +490,33 @@ function createSpeakingSkeletonCard(speaker: "You" | "Them"): HTMLElement {
 
 function speakerLabelForPhrase(phrase: Phrase): string {
   const speaker = (phrase.speaker || "").trim().toLowerCase();
-  return ["system audio", "system / remote", "system", "remote", "them"].includes(speaker) ? "Them" : "You";
+  return ["system audio", "system / remote", "system", "remote", "them"].includes(speaker) ? "Them" : "Me";
 }
 
 function scrollLivePhrasesToTop() {
   window.requestAnimationFrame(() => {
     livePhrasesList.scrollTo({ top: 0, behavior: "smooth" });
   });
+}
+
+function insertLivePhraseCardSorted(card: HTMLElement, startTime: number) {
+  card.dataset.startTime = String(startTime);
+  if (card.parentElement === livePhrasesList) {
+    card.remove();
+  }
+  const cards = Array.from(livePhrasesList.querySelectorAll<HTMLElement>(".phrase-card:not(.live-speaking-skeleton)"));
+  let inserted = false;
+  for (const existing of cards) {
+    const existingTime = parseFloat(existing.dataset.startTime || "0");
+    if (startTime >= existingTime) {
+      livePhrasesList.insertBefore(card, existing);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) {
+    livePhrasesList.appendChild(card);
+  }
 }
 
 function handlePhrasePending(phrase: Phrase) {
@@ -381,12 +529,12 @@ function handlePhrasePending(phrase: Phrase) {
   const speaker = speakerLabelForPhrase(phrase);
   let phraseCard: HTMLElement;
 
-  if (speaker === "You" && activeSpeakingCardYou) {
-    phraseCard = activeSpeakingCardYou;
-    activeSpeakingCardYou = null;
-    if (speakingCardTimerYou) {
-      window.clearTimeout(speakingCardTimerYou);
-      speakingCardTimerYou = null;
+  if (speaker === "Me" && activeSpeakingCardMe) {
+    phraseCard = activeSpeakingCardMe;
+    activeSpeakingCardMe = null;
+    if (speakingCardTimerMe) {
+      window.clearTimeout(speakingCardTimerMe);
+      speakingCardTimerMe = null;
     }
     phraseCard.classList.remove("live-speaking-skeleton");
   } else if (speaker === "Them" && activeSpeakingCardThem) {
@@ -400,7 +548,6 @@ function handlePhrasePending(phrase: Phrase) {
   } else {
     phraseCard = document.createElement("div");
     phraseCard.className = "phrase-card phrase-card-skeleton";
-    livePhrasesList.prepend(phraseCard);
   }
 
   phraseCard.dataset.phraseId = phrase.phrase_id;
@@ -418,26 +565,109 @@ function handlePhrasePending(phrase: Phrase) {
     <span class="phrase-skeleton-text" aria-hidden="true">${skeletonLines}</span>
   `;
 
+  insertLivePhraseCardSorted(phraseCard, Number(phrase.start_time) || 0);
   livePhraseCards.set(phrase.phrase_id, phraseCard);
   scrollLivePhrasesToTop();
 }
 
+let errorPopupTimer: number | null = null;
+let currentErrorString = "";
+
+function showErrorPopup(errorText: string) {
+  if (!errorText) return;
+  currentErrorString = errorText;
+  if (globalErrorText) globalErrorText.textContent = errorText;
+  if (globalErrorPopup) globalErrorPopup.classList.remove("hidden");
+  if (btnCopyError) btnCopyError.textContent = "Copy";
+
+  if (errorPopupTimer) window.clearTimeout(errorPopupTimer);
+  // Keep error visible until manually dismissed or after 20s
+  errorPopupTimer = window.setTimeout(() => {
+    if (globalErrorPopup) globalErrorPopup.classList.add("hidden");
+  }, 20000);
+}
+
+function hideErrorPopup() {
+  if (errorPopupTimer) {
+    window.clearTimeout(errorPopupTimer);
+    errorPopupTimer = null;
+  }
+  if (globalErrorPopup) globalErrorPopup.classList.add("hidden");
+}
+
+btnCopyError?.addEventListener("click", () => {
+  if (currentErrorString) {
+    navigator.clipboard.writeText(currentErrorString).then(() => {
+      if (btnCopyError) btnCopyError.textContent = "Copied!";
+      window.setTimeout(() => {
+        if (btnCopyError) btnCopyError.textContent = "Copy";
+      }, 2000);
+    }).catch(() => {
+      if (btnCopyError) btnCopyError.textContent = "Error";
+    });
+  }
+});
+
+btnCloseError?.addEventListener("click", () => {
+  hideErrorPopup();
+});
+
 function handlePhraseTranscribed(phrase: Phrase) {
   if (!phrase || !phrase.phrase_id || (phrase.session_id && phrase.session_id !== currentSessionId)) return;
-  emptyPhrasesHint.classList.add("hidden");
 
-  if (phrase.error) showMessage(`A speech segment could not be transcribed: ${phrase.error}`, true);
+  const cleanupPendingCard = () => {
+    const existing = livePhraseCards.get(phrase.phrase_id);
+    if (existing) {
+      existing.remove();
+      livePhraseCards.delete(phrase.phrase_id);
+    }
+    const spk = speakerLabelForPhrase(phrase);
+    if (spk === "Me" && activeSpeakingCardMe) {
+      activeSpeakingCardMe.remove();
+      activeSpeakingCardMe = null;
+      if (speakingCardTimerMe) {
+        window.clearTimeout(speakingCardTimerMe);
+        speakingCardTimerMe = null;
+      }
+    } else if (spk === "Them" && activeSpeakingCardThem) {
+      activeSpeakingCardThem.remove();
+      activeSpeakingCardThem = null;
+      if (speakingCardTimerThem) {
+        window.clearTimeout(speakingCardTimerThem);
+        speakingCardTimerThem = null;
+      }
+    }
+    if (livePhraseCards.size === 0 && !activeSpeakingCardMe && !activeSpeakingCardThem) {
+      emptyPhrasesHint.classList.remove("hidden");
+    }
+  };
+
+  // If transcription failed: show red popup with copy button. NEVER write error into transcript!
+  if (phrase.error) {
+    cleanupPendingCard();
+    showErrorPopup(`Transcription error: ${phrase.error}`);
+    return;
+  }
+
+  const text = (phrase.text || "").trim();
+  // If empty (suppressed hallucination or non-speech): NEVER write placeholder into transcript!
+  if (!text) {
+    cleanupPendingCard();
+    return;
+  }
+
+  emptyPhrasesHint.classList.add("hidden");
 
   const speaker = speakerLabelForPhrase(phrase);
   let phraseCard = livePhraseCards.get(phrase.phrase_id);
 
   if (!phraseCard) {
-    if (speaker === "You" && activeSpeakingCardYou) {
-      phraseCard = activeSpeakingCardYou;
-      activeSpeakingCardYou = null;
-      if (speakingCardTimerYou) {
-        window.clearTimeout(speakingCardTimerYou);
-        speakingCardTimerYou = null;
+    if (speaker === "Me" && activeSpeakingCardMe) {
+      phraseCard = activeSpeakingCardMe;
+      activeSpeakingCardMe = null;
+      if (speakingCardTimerMe) {
+        window.clearTimeout(speakingCardTimerMe);
+        speakingCardTimerMe = null;
       }
       phraseCard.classList.remove("live-speaking-skeleton");
     } else if (speaker === "Them" && activeSpeakingCardThem) {
@@ -450,22 +680,21 @@ function handlePhraseTranscribed(phrase: Phrase) {
       phraseCard.classList.remove("live-speaking-skeleton");
     } else {
       phraseCard = document.createElement("div");
-      livePhrasesList.prepend(phraseCard);
     }
   }
 
   const wasPending = phraseCard.classList.contains("phrase-card-skeleton");
-  phraseCard.className = `phrase-card${phrase.error ? " error" : ""}`;
+  phraseCard.className = "phrase-card";
   phraseCard.dataset.phraseId = phrase.phrase_id;
   phraseCard.removeAttribute("aria-busy");
-  phraseCard.setAttribute("aria-label", `${speaker}: ${phrase.text || "This segment could not be transcribed."}`);
+  phraseCard.setAttribute("aria-label", `${speaker}: ${text}`);
 
   phraseCard.innerHTML = `
     <span class="phrase-speaker">${escapeHtml(speaker)}:</span>
-    <span class="phrase-text${wasPending ? " phrase-text-revealed" : ""}">${escapeHtml(phrase.text || "This segment could not be transcribed.")}</span>
+    <span class="phrase-text${wasPending ? " phrase-text-revealed" : ""}">${escapeHtml(text)}</span>
   `;
 
-  if (!phraseCard.parentElement) livePhrasesList.prepend(phraseCard);
+  insertLivePhraseCardSorted(phraseCard, Number(phrase.start_time) || 0);
   livePhraseCards.set(phrase.phrase_id, phraseCard);
   scrollLivePhrasesToTop();
 }
@@ -474,7 +703,7 @@ function showRecordingError(error: string) {
   if (!error || error === lastRecordingError) return;
   lastRecordingError = error;
   btnStopRecording.textContent = "Stop & save what was captured";
-  showMessage(`Audio capture problem: ${error}. Check Settings, then stop this recording.`, true);
+  showErrorPopup(`Audio capture error: ${error}. Check Settings, then stop this recording.`);
 }
 
 function handleHqPassProgress(payload: any) {
@@ -513,16 +742,19 @@ function handleHqPassFailed(result: any) {
     hideHqModal();
     void selectSession(failedSessionId);
   }
-  showMessage(`High-quality transcription failed: ${result?.error || "Unknown error"}`, true);
+  showErrorPopup(`High-quality transcription failed: ${result?.error || "Unknown error"}`);
   void refreshHistory();
 }
 
 function showMessage(message: string, isError = false) {
+  if (isError) {
+    showErrorPopup(message);
+    return;
+  }
   if (statusMessageTimer) window.clearTimeout(statusMessageTimer);
   appStatusMessage.textContent = message;
-  appStatusMessage.classList.toggle("error", isError);
-  appStatusMessage.classList.remove("hidden");
-  statusMessageTimer = window.setTimeout(() => appStatusMessage.classList.add("hidden"), isError ? 9000 : 4500);
+  appStatusMessage.classList.remove("error", "hidden");
+  statusMessageTimer = window.setTimeout(() => appStatusMessage.classList.add("hidden"), 4500);
 }
 
 function modelCanRecord(): boolean {
@@ -737,6 +969,14 @@ function updateModelStatus(status: string, error?: string) {
   currentModelStatus = status;
   if (status !== "downloading") btnDownloadModel.removeAttribute("aria-busy");
 
+  // Manage gray popup: ONLY visible while status === "loading"
+  if (status === "loading") {
+    modelLoadingPopup?.classList.remove("hidden");
+  } else {
+    modelLoadingPopup?.classList.add("hidden");
+  }
+
+  // Model ready: show NOTHING (no persistent badge or "Model: Ready" clutter)
   if (status === "ready" || status === "transcribing") {
     modelGateCard.classList.add("hidden");
     modelProgressContainer.classList.add("hidden");
@@ -744,6 +984,7 @@ function updateModelStatus(status: string, error?: string) {
     settingsModelStatusText.textContent = status === "transcribing" ? "Status: Transcribing" : "Status: Ready in memory";
     btnPreloadModel.textContent = "Model Loaded";
     btnPreloadModel.disabled = true;
+    recModelStatus?.classList.add("hidden");
   } else if (status === "not_loaded") {
     modelGateCard.classList.add("hidden");
     modelProgressContainer.classList.add("hidden");
@@ -751,6 +992,7 @@ function updateModelStatus(status: string, error?: string) {
     settingsModelStatusText.textContent = "Status: Downloaded (Loads when recording starts)";
     btnPreloadModel.textContent = "Preload Model";
     btnPreloadModel.disabled = false;
+    recModelStatus?.classList.add("hidden");
   } else if (status === "loading") {
     modelGateCard.classList.remove("hidden");
     modelGateTag.textContent = "LOADING";
@@ -764,6 +1006,7 @@ function updateModelStatus(status: string, error?: string) {
     settingsModelStatusText.textContent = "Status: Loading weights into memory...";
     btnPreloadModel.textContent = "Loading...";
     btnPreloadModel.disabled = true;
+    recModelStatus?.classList.add("hidden");
   } else if (status === "downloading") {
     modelGateCard.classList.remove("hidden");
     modelGateTag.textContent = "DOWNLOADING";
@@ -774,6 +1017,7 @@ function updateModelStatus(status: string, error?: string) {
     settingsModelStatusText.textContent = "Status: Downloading...";
     btnPreloadModel.textContent = "Downloading...";
     btnPreloadModel.disabled = true;
+    recModelStatus?.classList.add("hidden");
   } else if (status === "error") {
     modelGateCard.classList.remove("hidden");
     modelGateTag.textContent = "ERROR";
@@ -787,6 +1031,9 @@ function updateModelStatus(status: string, error?: string) {
     settingsModelStatusText.textContent = `Status: Error (${error || "Failed"})`;
     btnPreloadModel.textContent = "Retry Download";
     btnPreloadModel.disabled = false;
+    recModelStatus?.classList.add("hidden");
+
+    showErrorPopup(`Model error: ${error || "Failed to load or download"}`);
   } else {
     // not_downloaded
     modelGateCard.classList.remove("hidden");
@@ -801,7 +1048,13 @@ function updateModelStatus(status: string, error?: string) {
     settingsModelStatusText.textContent = "Status: Not Downloaded";
     btnPreloadModel.textContent = "Download Model";
     btnPreloadModel.disabled = false;
+    recModelStatus?.classList.add("hidden");
   }
+
+  if (recModelStatus) {
+    recModelStatus.classList.add("hidden");
+  }
+
   updateStatusCircleAndDiagnostics();
   syncRecordControls();
   if (activeViewingSession) renderSessionProcessingState(activeViewingSession);
@@ -812,6 +1065,13 @@ async function refreshStatus() {
     const status: BackendStatus = await api.getStatus();
     latestStatus = status;
     backendOnline = true;
+    if (typeof status.ffmpeg_installed === "boolean" && ffmpegAlertBanner) {
+      if (status.ffmpeg_installed) {
+        ffmpegAlertBanner.classList.add("hidden");
+      } else {
+        ffmpegAlertBanner.classList.remove("hidden");
+      }
+    }
     if (status.download_progress) updateDownloadProgress(status.download_progress);
     else updateModelStatus(status.model_status, status.model_error);
 
@@ -839,50 +1099,91 @@ async function refreshDevices() {
     const data = await api.getDevices();
 
     // 1. Populate Mic Selector
-    const currentMic = selectedMicIndex ?? -1;
     selectMicDevice.innerHTML = "";
 
     const defaultMicOpt = document.createElement("option");
-    defaultMicOpt.value = "-1";
+    defaultMicOpt.value = "";
+    defaultMicOpt.dataset.index = "-1";
     defaultMicOpt.textContent = `Default: ${data.default_mic?.name || "Windows Default"}`;
-    if (currentMic === -1) {
-      defaultMicOpt.selected = true;
-    }
     selectMicDevice.appendChild(defaultMicOpt);
 
+    let micMatched = false;
     data.microphones.forEach((m) => {
       const opt = document.createElement("option");
-      opt.value = String(m.index);
+      opt.value = m.name;
+      opt.dataset.index = String(m.index);
       const isWinDefault = data.default_mic && m.index === data.default_mic.index;
       opt.textContent = `${m.name} ${isWinDefault ? "(Default Device)" : ""}`;
-      if (currentMic === m.index) {
+
+      if (selectedMicName && (m.name === selectedMicName || m.name.toLowerCase() === selectedMicName.toLowerCase())) {
         opt.selected = true;
+        selectedMicIndex = m.index;
+        micMatched = true;
+      } else if (!selectedMicName && selectedMicIndex >= 0 && selectedMicIndex === m.index) {
+        opt.selected = true;
+        selectedMicName = m.name;
+        micMatched = true;
       }
       selectMicDevice.appendChild(opt);
     });
 
+    if (selectedMicName && !micMatched) {
+      const disconnectedOpt = document.createElement("option");
+      disconnectedOpt.value = selectedMicName;
+      disconnectedOpt.dataset.index = "-1";
+      disconnectedOpt.textContent = `${selectedMicName} (Disconnected)`;
+      disconnectedOpt.disabled = true;
+      disconnectedOpt.selected = true;
+      selectMicDevice.appendChild(disconnectedOpt);
+      selectedMicIndex = -1;
+    } else if (!selectedMicName) {
+      defaultMicOpt.selected = true;
+      selectedMicIndex = -1;
+    }
+
     // 2. Populate System Audio Selector
-    const currentSys = selectedSystemIndex ?? -1;
     selectSystemDevice.innerHTML = "";
 
     const defaultSysOpt = document.createElement("option");
-    defaultSysOpt.value = "-1";
+    defaultSysOpt.value = "";
+    defaultSysOpt.dataset.index = "-1";
     defaultSysOpt.textContent = `Default: ${data.default_system?.name || "Windows Default Loopback"}`;
-    if (currentSys === -1) {
-      defaultSysOpt.selected = true;
-    }
     selectSystemDevice.appendChild(defaultSysOpt);
 
+    let sysMatched = false;
     data.system_devices.forEach((s) => {
       const opt = document.createElement("option");
-      opt.value = String(s.index);
+      opt.value = s.name;
+      opt.dataset.index = String(s.index);
       const isWinDefault = data.default_system && s.index === data.default_system.index;
       opt.textContent = `${s.name} ${isWinDefault ? "(Default Device)" : ""}`;
-      if (currentSys === s.index) {
+
+      if (selectedSystemName && (s.name === selectedSystemName || s.name.toLowerCase() === selectedSystemName.toLowerCase())) {
         opt.selected = true;
+        selectedSystemIndex = s.index;
+        sysMatched = true;
+      } else if (!selectedSystemName && selectedSystemIndex >= 0 && selectedSystemIndex === s.index) {
+        opt.selected = true;
+        selectedSystemName = s.name;
+        sysMatched = true;
       }
       selectSystemDevice.appendChild(opt);
     });
+
+    if (selectedSystemName && !sysMatched) {
+      const disconnectedOpt = document.createElement("option");
+      disconnectedOpt.value = selectedSystemName;
+      disconnectedOpt.dataset.index = "-1";
+      disconnectedOpt.textContent = `${selectedSystemName} (Disconnected)`;
+      disconnectedOpt.disabled = true;
+      disconnectedOpt.selected = true;
+      selectSystemDevice.appendChild(disconnectedOpt);
+      selectedSystemIndex = -1;
+    } else if (!selectedSystemName) {
+      defaultSysOpt.selected = true;
+      selectedSystemIndex = -1;
+    }
+
     updateStatusCircleAndDiagnostics();
   } catch (e) {
     console.error("Failed to query audio devices:", e);
@@ -939,6 +1240,8 @@ async function startRecording(mode: "mic_only" | "mic_and_system") {
       language: selectedLanguage,
       mic_device_index: selectedMicIndex >= 0 ? selectedMicIndex : undefined,
       system_device_index: selectedSystemIndex >= 0 ? selectedSystemIndex : undefined,
+      mic_device_name: selectedMicName || undefined,
+      system_device_name: selectedSystemName || undefined,
     });
     currentSessionId = res.session_id;
     enterRecording(mode === "mic_only" ? "Mic Only" : "Mic + System", true);
@@ -968,13 +1271,14 @@ function enterRecording(modeLabel: string, resetPhrases: boolean, elapsedSeconds
     livePhrasesList.innerHTML = "";
     emptyPhrasesHint.classList.remove("hidden");
     livePhrasesList.appendChild(emptyPhrasesHint);
-    if (activeSpeakingCardYou) { activeSpeakingCardYou.remove(); activeSpeakingCardYou = null; }
+    if (activeSpeakingCardMe) { activeSpeakingCardMe.remove(); activeSpeakingCardMe = null; }
     if (activeSpeakingCardThem) { activeSpeakingCardThem.remove(); activeSpeakingCardThem = null; }
-    if (speakingCardTimerYou) { clearTimeout(speakingCardTimerYou); speakingCardTimerYou = null; }
+    if (speakingCardTimerMe) { clearTimeout(speakingCardTimerMe); speakingCardTimerMe = null; }
     if (speakingCardTimerThem) { clearTimeout(speakingCardTimerThem); speakingCardTimerThem = null; }
   }
   recordingStartTime = Date.now() - Math.max(0, elapsedSeconds) * 1000;
   updateTimerDisplay();
+  updateModelStatus(currentModelStatus);
   if (recordingTimerInterval) clearInterval(recordingTimerInterval);
   recordingTimerInterval = window.setInterval(updateTimerDisplay, 500);
   updateStatusCircleAndDiagnostics();
@@ -990,9 +1294,9 @@ function leaveRecording() {
   activeRecordingScreen.classList.add("hidden");
   idleScreen.classList.remove("hidden");
   livePhraseCards.clear();
-  if (activeSpeakingCardYou) { activeSpeakingCardYou.remove(); activeSpeakingCardYou = null; }
+  if (activeSpeakingCardMe) { activeSpeakingCardMe.remove(); activeSpeakingCardMe = null; }
   if (activeSpeakingCardThem) { activeSpeakingCardThem.remove(); activeSpeakingCardThem = null; }
-  if (speakingCardTimerYou) { clearTimeout(speakingCardTimerYou); speakingCardTimerYou = null; }
+  if (speakingCardTimerMe) { clearTimeout(speakingCardTimerMe); speakingCardTimerMe = null; }
   if (speakingCardTimerThem) { clearTimeout(speakingCardTimerThem); speakingCardTimerThem = null; }
   if (labelMic) labelMic.classList.remove("speaking");
   if (labelSystem) labelSystem.classList.remove("speaking");
@@ -1228,6 +1532,72 @@ async function selectSession(sessionId: string) {
   }
 }
 
+async function saveTranscriptNow(session: RecordingSession) {
+  if (!session) return;
+  const currentSessionId = session.id;
+  const finalVal = finalTranscriptText.value;
+  const phrasesVal = session.phrases || [];
+
+  transcriptSavingSessionId = currentSessionId;
+  try {
+    await api.updateRecording(currentSessionId, {
+      final_transcript: finalVal,
+      phrases: phrasesVal,
+    });
+    showMessage("Transcript saved.");
+  } catch (error: any) {
+    showMessage(`Transcript was not saved: ${error.message}`, true);
+  } finally {
+    if (transcriptSavingSessionId === currentSessionId) transcriptSavingSessionId = null;
+    if (activeViewingSession?.id === currentSessionId) renderSessionProcessingState(session);
+  }
+}
+
+function syncFinalTranscriptToPhrases(session: RecordingSession, rawText: string) {
+  const blocks = parseTranscriptBlocks(rawText);
+  const oldPhrases = session.phrases || [];
+
+  if (blocks.length === 0) {
+    session.phrases = [];
+    interactivePhrasesContainer.innerHTML = `<div style="color: var(--text-muted); font-size: 15px; padding: 16px 0;">No speech segments transcribed.</div>`;
+    return;
+  }
+
+  const duration = session.duration || 0;
+  const reconciled = reconcilePhrases(oldPhrases, blocks, duration, session.id);
+  session.phrases = reconciled;
+
+  const currentRows = Array.from(interactivePhrasesContainer.querySelectorAll<HTMLElement>(".interactive-phrase-row"));
+
+  // If the number of phrases matches existing DOM rows, update in place without re-rendering
+  if (currentRows.length === reconciled.length) {
+    reconciled.forEach((phrase, idx) => {
+      const row = currentRows[idx];
+      const speakerLabel = speakerLabelForPhrase(phrase);
+
+      const spkEl = row.querySelector<HTMLElement>(".interactive-phrase-speaker");
+      if (spkEl) spkEl.textContent = `${speakerLabel}:`;
+
+      const textDiv = row.querySelector<HTMLElement>(".interactive-phrase-text");
+      if (textDiv) textDiv.textContent = phrase.text;
+
+      const ta = row.querySelector<HTMLTextAreaElement>(".phrase-text-input");
+      if (ta && document.activeElement !== ta) {
+        ta.value = phrase.text;
+      }
+
+      const timeBtn = row.querySelector<HTMLElement>(".interactive-phrase-time");
+      if (timeBtn) {
+        timeBtn.textContent = `[${formatSeconds(phrase.start_time)}]`;
+        timeBtn.title = `Jump to ${formatSeconds(phrase.start_time)} in audio`;
+      }
+    });
+  } else {
+    // Row count changed: re-render the phrase rows
+    renderInteractivePhrases(session);
+  }
+}
+
 function renderInteractivePhrases(session: RecordingSession) {
   interactivePhrasesContainer.innerHTML = "";
 
@@ -1247,7 +1617,13 @@ function renderInteractivePhrases(session: RecordingSession) {
       <button type="button" class="interactive-phrase-time" title="Jump to ${formatSeconds(phrase.start_time)} in audio">[${formatSeconds(phrase.start_time)}]</button>
       <div class="interactive-phrase-body">
         <span class="interactive-phrase-speaker">${escapeHtml(speakerLabel)}:</span>
-        <textarea class="phrase-text-input" rows="1">${escapeHtml(phrase.text)}</textarea>
+        <div class="interactive-phrase-text" title="Double-click to edit phrase">${escapeHtml(phrase.text)}</div>
+        <textarea class="phrase-text-input hidden" rows="1">${escapeHtml(phrase.text)}</textarea>
+        <button type="button" class="phrase-edit-btn" title="Edit phrase" aria-label="Edit phrase">
+          <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11.5 2.5a1.5 1.5 0 0 1 2 2L5 13H2.5v-2.5L11.5 2.5z" />
+          </svg>
+        </button>
       </div>
     `;
 
@@ -1258,7 +1634,9 @@ function renderInteractivePhrases(session: RecordingSession) {
       if (audioElement.paused) void audioElement.play().catch(() => showMessage("Audio could not be played.", true));
     });
 
+    const textDiv = row.querySelector(".interactive-phrase-text") as HTMLElement;
     const textarea = row.querySelector(".phrase-text-input") as HTMLTextAreaElement;
+    const editBtn = row.querySelector(".phrase-edit-btn") as HTMLButtonElement;
 
     // Auto-resize textarea so it expands naturally with text content
     const autoResize = () => {
@@ -1266,56 +1644,89 @@ function renderInteractivePhrases(session: RecordingSession) {
       textarea.style.height = `${textarea.scrollHeight}px`;
     };
 
-    textarea.addEventListener("input", autoResize);
-    window.requestAnimationFrame(autoResize);
-
-    // In-place phrase edit on input, blur, and change
     let lastSavedText = phrase.text;
-    let phraseDebounceTimer: number | null = null;
+    let isEditing = false;
 
-    const savePhrase = async () => {
-      if (!activeViewingSession || activeViewingSession.id !== session.id) return;
-      const newText = textarea.value;
-      if (newText === lastSavedText) return;
-      const previous = session.phrases[idx].text;
-      session.phrases[idx].text = newText;
-      lastSavedText = newText;
-      lastEditedTranscriptSource = "phrases";
-      try {
-        await api.updateRecording(session.id, { phrases: session.phrases });
-        showMessage("Phrase saved.");
-      } catch (error: any) {
-        session.phrases[idx].text = previous;
-        textarea.value = previous;
-        lastSavedText = previous;
-        autoResize();
-        showMessage(`Phrase was not saved: ${error.message}`, true);
+    const startEditing = () => {
+      if (isEditing) return;
+      if (session.status === "processing_hq" || retranscribeRequestInFlight) return;
+      isEditing = true;
+      textDiv.classList.add("hidden");
+      editBtn.classList.add("hidden");
+      textarea.classList.remove("hidden");
+      textarea.value = textDiv.textContent || phrase.text;
+      autoResize();
+      textarea.focus();
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    };
+
+    const stopEditing = async (save: boolean) => {
+      if (!isEditing) return;
+      isEditing = false;
+      const newText = textarea.value.trim();
+      textarea.classList.add("hidden");
+      textDiv.classList.remove("hidden");
+      editBtn.classList.remove("hidden");
+
+      if (save && newText !== lastSavedText) {
+        textDiv.textContent = newText;
+        session.phrases[idx].text = newText;
+        lastSavedText = newText;
+        lastEditedTranscriptSource = "phrases";
+
+        // Synchronize with the text field (finalTranscriptText) automatically
+        const newFullText = buildFinalTranscriptFromPhrases(session.phrases, finalTranscriptText.value);
+        session.final_transcript = newFullText;
+        finalTranscriptText.value = newFullText;
+
+        if (finalTranscriptDebounceTimer) {
+          window.clearTimeout(finalTranscriptDebounceTimer);
+          finalTranscriptDebounceTimer = null;
+        }
+        await saveTranscriptNow(session);
+      } else if (!save) {
+        textarea.value = lastSavedText;
+        textDiv.textContent = lastSavedText;
+        session.phrases[idx].text = lastSavedText;
+
+        const revertedFullText = buildFinalTranscriptFromPhrases(session.phrases, finalTranscriptText.value);
+        session.final_transcript = revertedFullText;
+        finalTranscriptText.value = revertedFullText;
       }
     };
 
+    textDiv.addEventListener("dblclick", () => startEditing());
+    editBtn.addEventListener("click", () => startEditing());
+
     textarea.addEventListener("input", () => {
       autoResize();
-      if (!activeViewingSession || activeViewingSession.id !== session.id) return;
+      // Keep in-memory phrase text and textDiv updated as user types
+      phrase.text = textarea.value;
       session.phrases[idx].text = textarea.value;
+      textDiv.textContent = textarea.value;
+
+      // Immediately synchronize the text field (finalTranscriptText)
+      const newFullText = buildFinalTranscriptFromPhrases(session.phrases, finalTranscriptText.value);
+      session.final_transcript = newFullText;
+      finalTranscriptText.value = newFullText;
       lastEditedTranscriptSource = "phrases";
-      if (phraseDebounceTimer) window.clearTimeout(phraseDebounceTimer);
-      phraseDebounceTimer = window.setTimeout(savePhrase, 600);
+
+      // Debounced auto-save while typing in phrase row
+      if (finalTranscriptDebounceTimer) window.clearTimeout(finalTranscriptDebounceTimer);
+      finalTranscriptDebounceTimer = window.setTimeout(() => void saveTranscriptNow(session), 600);
     });
 
     textarea.addEventListener("blur", () => {
-      if (phraseDebounceTimer) {
-        window.clearTimeout(phraseDebounceTimer);
-        phraseDebounceTimer = null;
-      }
-      void savePhrase();
+      void stopEditing(true);
     });
-
-    textarea.addEventListener("change", () => {
-      if (phraseDebounceTimer) {
-        window.clearTimeout(phraseDebounceTimer);
-        phraseDebounceTimer = null;
+    textarea.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        textarea.blur();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        void stopEditing(false);
       }
-      void savePhrase();
     });
 
     interactivePhrasesContainer.appendChild(row);
@@ -1460,60 +1871,53 @@ function setupHistoryActions() {
       activeViewingSession.final_transcript = finalTranscriptText.value;
     }
 
-    const phraseTextareas = interactivePhrasesContainer.querySelectorAll<HTMLTextAreaElement>(".phrase-text-input");
-    phraseTextareas.forEach((ta, i) => {
+    const rows = interactivePhrasesContainer.querySelectorAll<HTMLElement>(".interactive-phrase-row");
+    rows.forEach((row, i) => {
       if (activeViewingSession?.phrases && activeViewingSession.phrases[i]) {
-        activeViewingSession.phrases[i].text = ta.value;
+        const ta = row.querySelector<HTMLTextAreaElement>(".phrase-text-input");
+        const div = row.querySelector<HTMLElement>(".interactive-phrase-text");
+        const val = ta && !ta.classList.contains("hidden") ? ta.value : (div?.textContent ?? ta?.value ?? "");
+        activeViewingSession.phrases[i].text = val;
       }
     });
 
+    const formatPhrases = (phrases: Phrase[]) =>
+      phrases
+        .filter((p) => p.text && p.text.trim())
+        .map((p) => `${speakerLabelForPhrase(p)}: ${p.text.trim()}`)
+        .join("\n\n");
+
     // 2. Determine what to copy based on what the user edited or what is available
     if (lastEditedTranscriptSource === "phrases" && activeViewingSession.phrases && activeViewingSession.phrases.length > 0) {
-      return activeViewingSession.phrases.map((p) => `${speakerLabelForPhrase(p)}: ${p.text}`).join("\n");
+      return formatPhrases(activeViewingSession.phrases);
     }
 
     if (activeViewingSession.final_transcript && activeViewingSession.final_transcript.trim()) {
-      return activeViewingSession.final_transcript.trim();
+      const ft = activeViewingSession.final_transcript.trim();
+      if (ft.includes("Me:") || ft.includes("Them:") || !activeViewingSession.phrases || activeViewingSession.phrases.length === 0) {
+        return ft;
+      }
+      return formatPhrases(activeViewingSession.phrases);
     }
 
     if (activeViewingSession.phrases && activeViewingSession.phrases.length > 0) {
-      return activeViewingSession.phrases.map((p) => `${speakerLabelForPhrase(p)}: ${p.text}`).join("\n");
+      return formatPhrases(activeViewingSession.phrases);
     }
 
     return "";
   }
 
-  let finalTranscriptDebounceTimer: number | null = null;
-  const saveFinalTranscriptNow = async () => {
-    if (!activeViewingSession) return;
-    const session = activeViewingSession;
-    const newText = finalTranscriptText.value;
-    if (session.final_transcript === newText && !transcriptSavingSessionId) return;
-    const previous = session.final_transcript;
-    session.final_transcript = newText;
-    lastEditedTranscriptSource = "final_transcript";
-    transcriptSavingSessionId = session.id;
-    try {
-      await api.updateRecording(session.id, { final_transcript: newText });
-      showMessage("Transcript saved.");
-    } catch (error: any) {
-      if (activeViewingSession?.id === session.id) {
-        session.final_transcript = previous;
-        finalTranscriptText.value = previous;
-      }
-      showMessage(`Transcript was not saved: ${error.message}`, true);
-    } finally {
-      if (transcriptSavingSessionId === session.id) transcriptSavingSessionId = null;
-      if (activeViewingSession?.id === session.id) renderSessionProcessingState(session);
-    }
-  };
-
   finalTranscriptText.addEventListener("input", () => {
     if (!activeViewingSession) return;
-    activeViewingSession.final_transcript = finalTranscriptText.value;
+    const session = activeViewingSession;
+    const rawText = finalTranscriptText.value;
+    session.final_transcript = rawText;
     lastEditedTranscriptSource = "final_transcript";
+
+    syncFinalTranscriptToPhrases(session, rawText);
+
     if (finalTranscriptDebounceTimer) window.clearTimeout(finalTranscriptDebounceTimer);
-    finalTranscriptDebounceTimer = window.setTimeout(saveFinalTranscriptNow, 600);
+    finalTranscriptDebounceTimer = window.setTimeout(() => void saveTranscriptNow(session), 600);
   });
 
   finalTranscriptText.addEventListener("blur", () => {
@@ -1521,7 +1925,9 @@ function setupHistoryActions() {
       window.clearTimeout(finalTranscriptDebounceTimer);
       finalTranscriptDebounceTimer = null;
     }
-    void saveFinalTranscriptNow();
+    if (activeViewingSession) {
+      void saveTranscriptNow(activeViewingSession);
+    }
   });
 
   finalTranscriptText.addEventListener("change", () => {
@@ -1529,7 +1935,9 @@ function setupHistoryActions() {
       window.clearTimeout(finalTranscriptDebounceTimer);
       finalTranscriptDebounceTimer = null;
     }
-    void saveFinalTranscriptNow();
+    if (activeViewingSession) {
+      void saveTranscriptNow(activeViewingSession);
+    }
   });
 
   btnCopyTranscript.addEventListener("click", async () => {
@@ -1556,7 +1964,7 @@ function setupHistoryActions() {
       text += `--- Full Transcript ---\n${activeViewingSession.final_transcript}\n\n`;
     }
     if (activeViewingSession.phrases && activeViewingSession.phrases.length > 0) {
-      text += `--- Phrases ---\n` + activeViewingSession.phrases.map((p) => `[${formatSeconds(p.start_time)}] ${speakerLabelForPhrase(p)}: ${p.text}`).join("\n");
+      text += `--- Phrases ---\n` + activeViewingSession.phrases.map((p) => `[${formatSeconds(p.start_time)}] ${speakerLabelForPhrase(p)}: ${p.text}`).join("\n\n");
     }
     downloadFile(`${activeViewingSession.id}.txt`, text, "text/plain");
   });
@@ -1569,6 +1977,17 @@ function setupHistoryActions() {
       .join("\n");
     downloadFile(`${activeViewingSession.id}.srt`, srtContent, "text/plain");
   });
+
+  if (btnOpenFolder) {
+    btnOpenFolder.addEventListener("click", async () => {
+      if (!activeViewingSession) return;
+      try {
+        await api.openSessionFolder(activeViewingSession.id);
+      } catch (error: any) {
+        showMessage(`Could not open folder: ${error.message}`, true);
+      }
+    });
+  }
 
   btnDeleteSession.addEventListener("click", async () => {
     if (!activeViewingSession || btnDeleteSession.disabled) return;
@@ -1602,12 +2021,15 @@ function setupHistoryActions() {
 function loadSavedSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem("sayso.settings") || "{}");
+    selectedMicName = typeof saved.mic_name === "string" ? saved.mic_name : "";
+    selectedSystemName = typeof saved.system_name === "string" ? saved.system_name : "";
     selectedMicIndex = Number.isInteger(saved.mic) ? saved.mic : -1;
     selectedSystemIndex = Number.isInteger(saved.system) ? saved.system : -1;
     selectedLanguage = typeof saved.language === "string" ? saved.language : "en";
-    selectLanguage.value = selectedLanguage;
+    updateLanguageUI(selectedLanguage);
   } catch {
     localStorage.removeItem("sayso.settings");
+    updateLanguageUI("en");
   }
 }
 
@@ -1631,6 +2053,14 @@ function setupSettingsModal() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !settingsModal.classList.contains("hidden")) closeModal();
+  });
+
+  sidebarLangSelect?.addEventListener("change", () => {
+    if (sidebarLangSelect) void changeLanguage(sidebarLangSelect.value, true);
+  });
+
+  selectLanguage?.addEventListener("change", () => {
+    if (selectLanguage) void changeLanguage(selectLanguage.value, false);
   });
 
   btnRefreshDevices.addEventListener("click", async () => {
@@ -1661,28 +2091,42 @@ function setupSettingsModal() {
   });
 
   selectMicDevice.addEventListener("change", () => {
-    const v = parseInt(selectMicDevice.value, 10);
-    selectedMicIndex = isNaN(v) || v < 0 ? -1 : v;
+    selectedMicName = selectMicDevice.value;
+    const opt = selectMicDevice.options[selectMicDevice.selectedIndex];
+    const idx = opt?.dataset.index ? parseInt(opt.dataset.index, 10) : -1;
+    selectedMicIndex = isNaN(idx) ? -1 : idx;
   });
 
   selectSystemDevice.addEventListener("change", () => {
-    const v = parseInt(selectSystemDevice.value, 10);
-    selectedSystemIndex = isNaN(v) || v < 0 ? -1 : v;
+    selectedSystemName = selectSystemDevice.value;
+    const opt = selectSystemDevice.options[selectSystemDevice.selectedIndex];
+    const idx = opt?.dataset.index ? parseInt(opt.dataset.index, 10) : -1;
+    selectedSystemIndex = isNaN(idx) ? -1 : idx;
   });
 
   btnSaveSettings.addEventListener("click", () => {
-    const micVal = parseInt(selectMicDevice.value, 10);
-    selectedMicIndex = isNaN(micVal) || micVal < 0 ? -1 : micVal;
+    selectedMicName = selectMicDevice.value;
+    const micOpt = selectMicDevice.options[selectMicDevice.selectedIndex];
+    const micIdx = micOpt?.dataset.index ? parseInt(micOpt.dataset.index, 10) : -1;
+    selectedMicIndex = isNaN(micIdx) ? -1 : micIdx;
 
-    const sysVal = parseInt(selectSystemDevice.value, 10);
-    selectedSystemIndex = isNaN(sysVal) || sysVal < 0 ? -1 : sysVal;
+    selectedSystemName = selectSystemDevice.value;
+    const sysOpt = selectSystemDevice.options[selectSystemDevice.selectedIndex];
+    const sysIdx = sysOpt?.dataset.index ? parseInt(sysOpt.dataset.index, 10) : -1;
+    selectedSystemIndex = isNaN(sysIdx) ? -1 : sysIdx;
 
-    selectedLanguage = selectLanguage.value;
-    localStorage.setItem("sayso.settings", JSON.stringify({
-      mic: selectedMicIndex,
-      system: selectedSystemIndex,
-      language: selectedLanguage,
-    }));
+    void changeLanguage(selectLanguage.value, false);
+
+    try {
+      const saved = JSON.parse(localStorage.getItem("sayso.settings") || "{}");
+      saved.mic_name = selectedMicName;
+      saved.system_name = selectedSystemName;
+      saved.mic = selectedMicIndex;
+      saved.system = selectedSystemIndex;
+      saved.language = selectedLanguage;
+      localStorage.setItem("sayso.settings", JSON.stringify(saved));
+    } catch {}
+
     showMessage("Settings saved.");
     closeModal();
   });
@@ -1690,27 +2134,143 @@ function setupSettingsModal() {
 
 // Navigation Tabs
 function setupTabs() {
-  tabRecord.addEventListener("click", () => switchTab("record"));
-  tabHistory.addEventListener("click", () => switchTab("history"));
+  tabRecord?.addEventListener("click", () => switchTab("record"));
+  tabUpload?.addEventListener("click", () => switchTab("upload"));
+  tabHistory?.addEventListener("click", () => switchTab("history"));
 }
 
-function switchTab(tab: "record" | "history") {
-  if (tab === "record") {
-    tabRecord.classList.add("active");
-    tabHistory.classList.remove("active");
-    tabRecord.setAttribute("aria-selected", "true");
-    tabHistory.setAttribute("aria-selected", "false");
-    viewRecord.classList.add("active");
-    viewHistory.classList.remove("active");
-  } else {
-    tabRecord.classList.remove("active");
-    tabHistory.classList.add("active");
-    tabRecord.setAttribute("aria-selected", "false");
-    tabHistory.setAttribute("aria-selected", "true");
-    viewRecord.classList.remove("active");
-    viewHistory.classList.add("active");
+function switchTab(tab: "record" | "upload" | "history") {
+  const isRecord = tab === "record";
+  const isUpload = tab === "upload";
+  const isHistory = tab === "history";
+
+  tabRecord?.classList.toggle("active", isRecord);
+  tabRecord?.setAttribute("aria-selected", String(isRecord));
+  viewRecord?.classList.toggle("active", isRecord);
+
+  tabUpload?.classList.toggle("active", isUpload);
+  tabUpload?.setAttribute("aria-selected", String(isUpload));
+  viewUpload?.classList.toggle("active", isUpload);
+
+  tabHistory?.classList.toggle("active", isHistory);
+  tabHistory?.setAttribute("aria-selected", String(isHistory));
+  viewHistory?.classList.toggle("active", isHistory);
+
+  if (isHistory) {
     void refreshHistory();
   }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function setupUploadView() {
+  if (!uploadDropzone || !uploadFileInput) return;
+
+  const handleFile = (file: File | null) => {
+    if (!file) return;
+    selectedUploadFile = file;
+    if (selectedFileName) selectedFileName.textContent = file.name;
+    if (selectedFileSize) selectedFileSize.textContent = formatBytes(file.size);
+    const stem = file.name.replace(/\.[^/.]+$/, "");
+    if (uploadTitleInput) uploadTitleInput.value = stem;
+    if (uploadLanguageSelect) uploadLanguageSelect.value = selectedLanguage;
+    uploadFileDetails?.classList.remove("hidden");
+    uploadProgressCard?.classList.add("hidden");
+    if (btnSubmitUpload) btnSubmitUpload.disabled = false;
+  };
+
+  uploadDropzone.addEventListener("click", () => {
+    uploadFileInput.click();
+  });
+
+  uploadDropzone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      uploadFileInput.click();
+    }
+  });
+
+  uploadFileInput.addEventListener("change", () => {
+    const file = uploadFileInput.files?.[0] || null;
+    handleFile(file);
+  });
+
+  uploadDropzone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    uploadDropzone.classList.add("drag-over");
+  });
+
+  uploadDropzone.addEventListener("dragleave", (e) => {
+    e.preventDefault();
+    uploadDropzone.classList.remove("drag-over");
+  });
+
+  uploadDropzone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    uploadDropzone.classList.remove("drag-over");
+    const file = e.dataTransfer?.files?.[0] || null;
+    handleFile(file);
+  });
+
+  btnRemoveFile?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    selectedUploadFile = null;
+    uploadFileInput.value = "";
+    uploadFileDetails?.classList.add("hidden");
+    uploadProgressCard?.classList.add("hidden");
+  });
+
+  btnSubmitUpload?.addEventListener("click", async () => {
+    if (!selectedUploadFile) {
+      showMessage("Please select an audio file first.", true);
+      return;
+    }
+
+    if (latestStatus?.ffmpeg_installed === false) {
+      showMessage("ffmpeg not installed, please install.", true);
+      return;
+    }
+
+    if (!modelCanRecord() && currentModelStatus !== "ready" && currentModelStatus !== "not_loaded") {
+      showMessage("Download the transcription model before transcribing files.", true);
+      return;
+    }
+
+    btnSubmitUpload.disabled = true;
+    uploadProgressCard?.classList.remove("hidden");
+    if (uploadProgressBar) uploadProgressBar.style.width = "25%";
+    if (uploadStatusText) uploadStatusText.textContent = "Uploading & converting audio…";
+
+    try {
+      const res = await api.uploadAudio(
+        selectedUploadFile,
+        uploadLanguageSelect?.value || selectedLanguage,
+        uploadTitleInput?.value.trim() || undefined
+      );
+
+      if (uploadProgressBar) uploadProgressBar.style.width = "75%";
+      if (uploadStatusText) uploadStatusText.textContent = "Transcribing audio with high quality…";
+
+      targetHqSessionId = res.session_id;
+      showHqModal(res.session_id);
+
+      // Reset upload view
+      selectedUploadFile = null;
+      uploadFileInput.value = "";
+      uploadFileDetails?.classList.add("hidden");
+      uploadProgressCard?.classList.add("hidden");
+      btnSubmitUpload.disabled = false;
+    } catch (err: any) {
+      uploadProgressCard?.classList.add("hidden");
+      btnSubmitUpload.disabled = false;
+      const errMsg = err.message || "Upload failed";
+      showMessage(errMsg, true);
+    }
+  });
 }
 
 // Window Controls (Tauri IPC with Graceful Web Fallback)

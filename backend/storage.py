@@ -27,7 +27,13 @@ def format_srt_time(seconds: float) -> str:
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{millis:03d}"
 
 
+def normalize_speaker(spk: Optional[str]) -> str:
+    s = (spk or "").strip().lower()
+    return "Them" if s in ("them", "system", "remote", "system audio", "system / remote") else "Me"
+
+
 class StorageManager:
+
     """Thread-safe local session storage with validated paths and atomic metadata writes."""
 
     def __init__(self, base_dir: Path = RECORDINGS_DIR):
@@ -78,24 +84,70 @@ class StorageManager:
             self._save_metadata(session_id, meta)
             return meta
 
-    def save_audio(self, session_id: str, audio_np: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
+    def save_session_audios(
+        self,
+        session_id: str,
+        audio_mixed: Optional[np.ndarray] = None,
+        audio_mic: Optional[np.ndarray] = None,
+        audio_system: Optional[np.ndarray] = None,
+        sample_rate: int = SAMPLE_RATE,
+    ) -> Dict[str, str]:
         with self._lock_for(session_id):
             sdir = self._get_session_dir(session_id)
             sdir.mkdir(parents=True, exist_ok=True)
-            wav_path = sdir / "audio.wav"
-            sf.write(str(wav_path), np.clip(audio_np, -1.0, 1.0), sample_rate, subtype="PCM_16")
-            return str(wav_path)
+            saved_paths: Dict[str, str] = {}
+            if audio_mixed is not None and len(audio_mixed) > 0:
+                p = sdir / "audio.wav"
+                sf.write(str(p), np.clip(audio_mixed, -1.0, 1.0), sample_rate, subtype="PCM_16")
+                saved_paths["audio"] = str(p)
+            if audio_mic is not None and len(audio_mic) > 0:
+                p = sdir / "mic.wav"
+                sf.write(str(p), np.clip(audio_mic, -1.0, 1.0), sample_rate, subtype="PCM_16")
+                saved_paths["mic"] = str(p)
+            if audio_system is not None and len(audio_system) > 0:
+                p = sdir / "system.wav"
+                sf.write(str(p), np.clip(audio_system, -1.0, 1.0), sample_rate, subtype="PCM_16")
+                saved_paths["system"] = str(p)
+
+            meta = self._read_metadata(session_id)
+            if meta:
+                if "audio" in saved_paths:
+                    meta["audio_file"] = "audio.wav"
+                if "mic" in saved_paths:
+                    meta["audio_mic_file"] = "mic.wav"
+                if "system" in saved_paths:
+                    meta["audio_system_file"] = "system.wav"
+                self._save_metadata(session_id, meta)
+            return saved_paths
+
+    def save_audio(self, session_id: str, audio_np: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
+        res = self.save_session_audios(session_id, audio_mixed=audio_np, sample_rate=sample_rate)
+        return res.get("audio", "")
 
     def append_phrase(self, session_id: str, phrase: Dict[str, Any]):
         with self._lock_for(session_id):
             meta = self._read_metadata(session_id)
             if not meta:
                 return
-            meta.setdefault("phrases", []).append(phrase)
+            text = (phrase.get("text") or "").strip()
+            pid = phrase.get("phrase_id")
+            phrases = meta.setdefault("phrases", [])
+            if pid:
+                phrases = [p for p in phrases if p.get("phrase_id") != pid]
+
+            # Only append if phrase has valid non-empty transcribed text and no fatal error
+            if text and not phrase.get("error"):
+                if phrase.get("speaker"):
+                    phrase["speaker"] = normalize_speaker(phrase["speaker"])
+                phrase["text"] = text
+                phrases.append(phrase)
+                phrases.sort(key=lambda p: float(p.get("start_time", 0.0)))
+
+            meta["phrases"] = phrases
             if meta.get("status") == "recording":
-                texts = [p.get("text", "") for p in meta["phrases"] if p.get("text")]
-                meta["final_transcript"] = "\n".join(texts)
-            if phrase.get("end_time") is not None:
+                lines = [f"{normalize_speaker(p.get('speaker', 'Me'))}: {p.get('text', '')}" for p in meta["phrases"] if p.get("text")]
+                meta["final_transcript"] = "\n\n".join(lines)
+            if phrase.get("end_time") is not None and text:
                 meta["duration"] = max(meta.get("duration", 0.0), phrase["end_time"])
             self._save_and_export(session_id, meta)
 
@@ -113,14 +165,20 @@ class StorageManager:
             self._save_and_export(session_id, meta)
             return meta
 
-    def complete_hq(self, session_id: str, job_id: str, full_text: str, duration_s: Optional[float] = None) -> bool:
+    def complete_hq(self, session_id: str, job_id: str, full_text: str, duration_s: Optional[float] = None, phrases: Optional[List[Dict[str, Any]]] = None) -> bool:
         """Commit only the current job and never overwrite a transcript edited after it started."""
         with self._lock_for(session_id):
             meta = self._read_metadata(session_id)
             if not meta or meta.get("hq_job_id") != job_id:
                 return False
-            if meta.get("transcript_revision", 0) == meta.get("hq_base_revision", 0) and full_text:
-                meta["final_transcript"] = full_text
+            if meta.get("transcript_revision", 0) == meta.get("hq_base_revision", 0):
+                if full_text:
+                    meta["final_transcript"] = full_text
+                if phrases is not None and len(phrases) > 0:
+                    for p in phrases:
+                        if p.get("speaker"):
+                            p["speaker"] = normalize_speaker(p["speaker"])
+                    meta["phrases"] = phrases
             meta["status"] = "completed"
             meta["status_error"] = None
             meta["hq_job_id"] = None
@@ -161,7 +219,14 @@ class StorageManager:
             for key, value in updates.items():
                 if key in ("title", "final_transcript", "phrases", "language"):
                     meta[key] = value
-            if "final_transcript" in updates:
+            if "phrases" in updates and "final_transcript" not in updates:
+                lines = [
+                    f"{normalize_speaker(p.get('speaker', 'Me'))}: {p.get('text', '')}"
+                    for p in meta.get("phrases", [])
+                    if p.get("text")
+                ]
+                meta["final_transcript"] = "\n\n".join(lines)
+            if "final_transcript" in updates or "phrases" in updates:
                 meta["transcript_revision"] = meta.get("transcript_revision", 0) + 1
             self._save_and_export(session_id, meta)
             return meta
@@ -212,8 +277,10 @@ class StorageManager:
                 )
                 current["hq_job_id"] = None
                 if not current.get("final_transcript") and current.get("phrases"):
-                    current["final_transcript"] = "\n".join(
-                        p.get("text", "") for p in current["phrases"] if p.get("text")
+                    current["final_transcript"] = "\n\n".join(
+                        f"{normalize_speaker(p.get('speaker', 'Me'))}: {p.get('text', '')}"
+                        for p in current["phrases"]
+                        if p.get("text")
                     )
                 self._save_and_export(session_id, current)
                 recovered += 1
@@ -232,13 +299,27 @@ class StorageManager:
                     time.sleep(0.05)
             return False
 
-    def get_audio_path(self, session_id: str) -> Optional[Path]:
+    def get_session_dir(self, session_id: str) -> Path:
+        return self._get_session_dir(session_id)
+
+    def get_audio_path(self, session_id: str, channel: str = "mixed") -> Optional[Path]:
         with self._lock_for(session_id):
-            wav_path = self._get_session_dir(session_id) / "audio.wav"
+            sdir = self._get_session_dir(session_id)
+            if channel == "mic":
+                p = sdir / "mic.wav"
+                if p.exists():
+                    return p
+            elif channel == "system":
+                p = sdir / "system.wav"
+                if p.exists():
+                    return p
+            wav_path = sdir / "audio.wav"
             return wav_path if wav_path.exists() else None
 
-    def load_audio(self, session_id: str) -> Optional[np.ndarray]:
-        wav_path = self.get_audio_path(session_id)
+    def load_audio(self, session_id: str, channel: str = "mixed") -> Optional[np.ndarray]:
+        wav_path = self.get_audio_path(session_id, channel=channel)
+        if not wav_path and channel != "mixed":
+            wav_path = self.get_audio_path(session_id, channel="mixed")
         if not wav_path:
             return None
         try:
@@ -250,22 +331,15 @@ class StorageManager:
                 data = resample_to_16k(data, sr)
             return data
         except Exception as exc:
-            logger.error("Failed to load audio for session %s: %s", session_id, exc)
+            logger.error("Failed to load audio (%s) for session %s: %s", channel, session_id, exc)
             return None
 
     def _save_metadata(self, session_id: str, data: Dict[str, Any]):
         sdir = self._get_session_dir(session_id)
         sdir.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix="session-", suffix=".tmp", dir=str(sdir))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_name, sdir / "session.json")
-        finally:
-            if os.path.exists(temp_name):
-                os.unlink(temp_name)
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        self._atomic_write_text(sdir / "session.json", content)
+
 
     def _save_and_export(self, session_id: str, meta: Dict[str, Any]):
         self._save_metadata(session_id, meta)
@@ -292,13 +366,14 @@ class StorageManager:
             "--- Phrases ---",
         ]
         for phrase in meta.get("phrases", []):
-            lines.append(f"[{phrase.get('start_time', 0):.1f}s - {phrase.get('end_time', 0):.1f}s] {phrase.get('speaker', 'Speaker')}: {phrase.get('text', '')}")
+            spk = normalize_speaker(phrase.get("speaker", "Me"))
+            lines.append(f"[{phrase.get('start_time', 0):.1f}s - {phrase.get('end_time', 0):.1f}s] {spk}: {phrase.get('text', '')}")
         if meta.get("final_transcript"):
             lines.extend(["", "--- Full Transcript ---", meta["final_transcript"]])
         self._atomic_write_text(sdir / "transcript.txt", "\n".join(lines) + "\n")
 
         srt = "".join(
-            f"{idx}\n{format_srt_time(p.get('start_time', 0))} --> {format_srt_time(p.get('end_time', 0))}\n{p.get('text', '')}\n\n"
+            f"{idx}\n{format_srt_time(p.get('start_time', 0))} --> {format_srt_time(p.get('end_time', 0))}\n{normalize_speaker(p.get('speaker', 'Me'))}: {p.get('text', '')}\n\n"
             for idx, p in enumerate(meta.get("phrases", []), 1)
         )
         self._atomic_write_text(sdir / "transcript.srt", srt)

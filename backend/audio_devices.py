@@ -84,6 +84,9 @@ def get_audio_devices(force_refresh: bool = False) -> Dict[str, Any]:
 
             # Enumerate all devices
             device_count = p.get_device_count()
+            seen_mic_names = set()
+            seen_sys_names = set()
+
             for i in range(device_count):
                 try:
                     info = p.get_device_info_by_index(i)
@@ -93,19 +96,23 @@ def get_audio_devices(force_refresh: bool = False) -> Dict[str, Any]:
                     sample_rate = int(info.get("defaultSampleRate", 16000))
 
                     if is_loopback:
-                        system_devices.append({
-                            "index": i,
-                            "name": name,
-                            "channels": max_inputs,
-                            "sample_rate": sample_rate,
-                        })
+                        if name not in seen_sys_names:
+                            seen_sys_names.add(name)
+                            system_devices.append({
+                                "index": i,
+                                "name": name,
+                                "channels": max_inputs,
+                                "sample_rate": sample_rate,
+                            })
                     elif max_inputs > 0:
-                        microphones.append({
-                            "index": i,
-                            "name": name,
-                            "channels": max_inputs,
-                            "sample_rate": sample_rate,
-                        })
+                        if name not in seen_mic_names:
+                            seen_mic_names.add(name)
+                            microphones.append({
+                                "index": i,
+                                "name": name,
+                                "channels": max_inputs,
+                                "sample_rate": sample_rate,
+                            })
                 except Exception as e:
                     logger.debug(f"Skipping audio device index {i}: {e}")
 
@@ -147,3 +154,98 @@ def get_audio_devices(force_refresh: bool = False) -> Dict[str, Any]:
                     pass
 
         return _cached_devices
+
+
+def resolve_device_index(
+    p: Any,
+    target_name: Optional[str] = None,
+    target_index: Optional[int] = None,
+    is_loopback: bool = False,
+) -> Optional[int]:
+    """
+    Resolve live PortAudio device index for a requested device name or index.
+    Prioritizes matching by name so that device unplugging/reconnecting or PC restarts
+    do not misdirect capture to the wrong audio hardware (e.g. monitors vs headphones).
+    """
+    if p is None:
+        return None
+
+    try:
+        device_count = p.get_device_count()
+    except Exception as e:
+        logger.warning("Could not get device count: %s", e)
+        return None
+
+    # 1. Match by exact or partial device name if provided
+    if target_name and target_name.strip():
+        name_clean = target_name.strip().lower()
+        candidates: List[tuple] = []
+        for i in range(device_count):
+            try:
+                info = p.get_device_info_by_index(i)
+                dev_name = info.get("name", "").strip()
+                dev_lower = dev_name.lower()
+                dev_is_loopback = bool(info.get("isLoopbackDevice", False)) or ("[loopback]" in dev_lower)
+                max_inputs = info.get("maxInputChannels", 0)
+
+                if is_loopback:
+                    if not dev_is_loopback:
+                        continue
+                else:
+                    if dev_is_loopback or max_inputs <= 0:
+                        continue
+
+                # Exact match
+                if dev_lower == name_clean:
+                    logger.info("Found exact match for device '%s' at live index %d", target_name, i)
+                    return i
+
+                # Fuzzy / partial match
+                if name_clean in dev_lower or dev_lower in name_clean:
+                    candidates.append((i, dev_name))
+            except Exception:
+                continue
+
+        if candidates:
+            best_idx, best_name = candidates[0]
+            logger.info("Found partial match for device '%s' -> '%s' at live index %d", target_name, best_name, best_idx)
+            return best_idx
+
+        logger.warning(
+            "Device named '%s' was requested but is not currently available (disconnected?). "
+            "Falling back to default device instead of an arbitrary index.",
+            target_name
+        )
+        target_index = None
+
+    # 2. Check target_index if valid and compatible
+    if target_index is not None and 0 <= target_index < device_count:
+        try:
+            info = p.get_device_info_by_index(target_index)
+            dev_name = info.get("name", "").strip()
+            dev_lower = dev_name.lower()
+            dev_is_loopback = bool(info.get("isLoopbackDevice", False)) or ("[loopback]" in dev_lower)
+            max_inputs = info.get("maxInputChannels", 0)
+            if is_loopback and dev_is_loopback:
+                return target_index
+            elif not is_loopback and not dev_is_loopback and max_inputs > 0:
+                return target_index
+        except Exception:
+            pass
+
+    # 3. Fallback to system default
+    try:
+        if is_loopback:
+            if hasattr(p, "get_default_wasapi_loopback"):
+                def_loop = p.get_default_wasapi_loopback()
+                if def_loop:
+                    return def_loop.get("index")
+        else:
+            def_in = p.get_default_input_device_info()
+            if def_in:
+                return def_in.get("index")
+    except Exception as e:
+        logger.warning("Could not get default device info: %s", e)
+
+    return None
+

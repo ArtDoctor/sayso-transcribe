@@ -71,7 +71,7 @@ def test_full_recording_e2e_pipeline(monkeypatch):
             if session and session["status"] == "completed":
                 break
             time.sleep(0.01)
-        assert session["final_transcript"] == "High quality final transcript."
+        assert session["final_transcript"] == "Me: High quality final transcript."
 
         # Playback/export files and editing.
         audio_path = storage.get_audio_path(session_id)

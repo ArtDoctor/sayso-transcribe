@@ -10,7 +10,7 @@ from .config import (
     FORMAT_WIDTH,
 )
 from .vad_engine import PhraseSegmenter
-from .audio_devices import PORTAUDIO_LOCK
+from .audio_devices import PORTAUDIO_LOCK, resolve_device_index
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,8 @@ class AudioRecorder:
         mode: str = "mic_only",
         mic_device_index: Optional[int] = None,
         system_device_index: Optional[int] = None,
+        mic_device_name: Optional[str] = None,
+        system_device_name: Optional[str] = None,
     ) -> bool:
         with self._lock:
             if self.is_recording:
@@ -105,7 +107,7 @@ class AudioRecorder:
 
             # Initialize phrase segmenters
             self._mic_segmenter = PhraseSegmenter(
-                stream_name="You",
+                stream_name="Me",
                 on_phrase_completed=self._handle_phrase_completed,
             )
             if mode == "mic_and_system":
@@ -113,6 +115,8 @@ class AudioRecorder:
                     stream_name="Them",
                     on_phrase_completed=self._handle_phrase_completed,
                 )
+                self._mic_segmenter.set_partner(self._system_segmenter)
+                self._system_segmenter.set_partner(self._mic_segmenter)
             else:
                 self._system_segmenter = None
 
@@ -127,7 +131,7 @@ class AudioRecorder:
             # Start Microphone capture thread
             self._mic_thread = threading.Thread(
                 target=self._capture_mic_worker,
-                args=(mic_device_index,),
+                args=(mic_device_name, mic_device_index),
                 daemon=True,
             )
             self._mic_thread.start()
@@ -136,7 +140,7 @@ class AudioRecorder:
             if mode == "mic_and_system":
                 self._loopback_thread = threading.Thread(
                     target=self._capture_loopback_worker,
-                    args=(system_device_index,),
+                    args=(system_device_name, system_device_index),
                     daemon=True,
                 )
                 self._loopback_thread.start()
@@ -193,13 +197,19 @@ class AudioRecorder:
             "session_id": stopped_session_id,
             "duration": duration,
             "audio": final_audio,
+            "audio_mic": full_mic if len(full_mic) > 0 else None,
+            "audio_system": full_sys if len(full_sys) > 0 else None,
         }
 
-    def get_current_audio(self) -> np.ndarray:
-        """Return captured audio so far without stopping the recorder."""
+    def get_current_audios(self) -> Dict[str, np.ndarray]:
+        """Return captured audio streams so far without stopping the recorder."""
         with self._lock:
             if not self._mic_audio_chunks and not self._loopback_audio_chunks:
-                return np.zeros(0, dtype=np.float32)
+                return {
+                    "audio": np.zeros(0, dtype=np.float32),
+                    "mic": np.zeros(0, dtype=np.float32),
+                    "system": np.zeros(0, dtype=np.float32),
+                }
             mic_chunks = list(self._mic_audio_chunks)
             sys_chunks = list(self._loopback_audio_chunks)
 
@@ -211,12 +221,23 @@ class AudioRecorder:
             mixed = np.zeros(max_len, dtype=np.float32)
             mixed[:len(full_mic)] += full_mic * 0.9
             mixed[:len(full_sys)] += full_sys * 0.9
-            return np.clip(mixed, -1.0, 1.0)
+            mixed_audio = np.clip(mixed, -1.0, 1.0)
         elif len(full_mic) > 0:
-            return full_mic
+            mixed_audio = full_mic
         elif len(full_sys) > 0:
-            return full_sys
-        return np.zeros(0, dtype=np.float32)
+            mixed_audio = full_sys
+        else:
+            mixed_audio = np.zeros(0, dtype=np.float32)
+
+        return {
+            "audio": mixed_audio,
+            "mic": full_mic,
+            "system": full_sys,
+        }
+
+    def get_current_audio(self) -> np.ndarray:
+        """Return captured mixed audio so far without stopping the recorder."""
+        return self.get_current_audios()["audio"]
 
     def _report_capture_error(self, source: str, error: str):
         self.last_error = error
@@ -231,36 +252,23 @@ class AudioRecorder:
             self.on_error(payload)
 
     def _handle_phrase_completed(self, stream_name: str, start_time: float, end_time: float, audio_np: np.ndarray):
+        spk = "Me" if stream_name.lower() in ("you", "me") else "Them"
         if self.on_phrase_ready and self.session_id:
-            self.on_phrase_ready(self.session_id, stream_name, start_time, end_time, audio_np)
+            self.on_phrase_ready(self.session_id, spk, start_time, end_time, audio_np)
 
-    def _capture_mic_worker(self, device_index: Optional[int]):
+    def _capture_mic_worker(self, device_name: Optional[str] = None, device_index: Optional[int] = None):
         p = None
         stream = None
         try:
             with PORTAUDIO_LOCK:
                 p = pyaudio.PyAudio()
-                # Resolve device info
-                if device_index is not None and device_index >= 0:
-                    try:
-                        dev_info = p.get_device_info_by_index(device_index)
-                    except Exception:
-                        dev_info = p.get_default_input_device_info()
-                else:
-                    dev_info = p.get_default_input_device_info()
+                idx = resolve_device_index(p, target_name=device_name, target_index=device_index, is_loopback=False)
 
-                if not dev_info:
-                    from .audio_devices import get_audio_devices
-                    devs = get_audio_devices()
-                    def_mic = devs.get("default_mic")
-                    if def_mic and def_mic.get("index", -1) >= 0:
-                        dev_info = p.get_device_info_by_index(def_mic["index"])
-
-                if not dev_info:
+                if idx is None or idx < 0:
                     self._report_capture_error("microphone", "No microphone input device was found")
                     return
 
-                idx = dev_info["index"]
+                dev_info = p.get_device_info_by_index(idx)
                 dev_sr = int(dev_info.get("defaultSampleRate", SAMPLE_RATE))
                 dev_channels = min(2, max(1, dev_info.get("maxInputChannels", 1)))
 
@@ -337,33 +345,19 @@ class AudioRecorder:
                     except Exception:
                         pass
 
-    def _capture_loopback_worker(self, device_index: Optional[int]):
+    def _capture_loopback_worker(self, device_name: Optional[str] = None, device_index: Optional[int] = None):
         p = None
         stream = None
         try:
             with PORTAUDIO_LOCK:
                 p = pyaudio.PyAudio()
-                # Resolve WASAPI loopback device
-                if device_index is not None and device_index >= 0:
-                    try:
-                        dev_info = p.get_device_info_by_index(device_index)
-                    except Exception:
-                        dev_info = p.get_default_wasapi_loopback() if hasattr(p, "get_default_wasapi_loopback") else None
-                else:
-                    dev_info = p.get_default_wasapi_loopback() if hasattr(p, "get_default_wasapi_loopback") else None
+                idx = resolve_device_index(p, target_name=device_name, target_index=device_index, is_loopback=True)
 
-                if not dev_info:
-                    from .audio_devices import get_audio_devices
-                    devs = get_audio_devices()
-                    def_sys = devs.get("default_system")
-                    if def_sys and def_sys.get("index", -1) >= 0:
-                        dev_info = p.get_device_info_by_index(def_sys["index"])
-
-                if not dev_info:
+                if idx is None or idx < 0:
                     self._report_capture_error("system", "No Windows system-audio loopback device was found")
                     return
 
-                idx = dev_info["index"]
+                dev_info = p.get_device_info_by_index(idx)
                 dev_sr = int(dev_info.get("defaultSampleRate", 48000))
                 dev_channels = max(1, dev_info.get("maxInputChannels", 2))
 

@@ -3,6 +3,7 @@
 # The CUDA wheel also supports CPU execution when no NVIDIA GPU is available.
 --extra-index-url https://download.pytorch.org/whl/cu126
 fastapi>=0.115,<1
+python-multipart>=0.0.18,<0.1
 uvicorn[standard]>=0.34,<1
 pydantic>=2.9,<3
 numpy>=2.0,<3

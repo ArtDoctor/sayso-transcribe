@@ -37,6 +37,7 @@ export interface BackendStatus {
   default_system?: { index: number; name: string };
   device?: string;
   cuda_device_name?: string | null;
+  ffmpeg_installed?: boolean;
 }
 
 export interface Phrase {
@@ -58,12 +59,14 @@ export interface RecordingSession {
   created_at: string;
   duration: number;
   mode: "mic_only" | "mic_and_system";
-  language: string;
-  status: "recording" | "processing_hq" | "completed" | "hq_error" | "interrupted";
+  language?: string;
+  status?: "recording" | "completed" | "processing_hq" | "hq_error" | "interrupted";
   status_error?: string | null;
   phrases: Phrase[];
-  final_transcript: string;
-  audio_file: string;
+  final_transcript?: string;
+  audio_file?: string;
+  audio_mic_file?: string;
+  audio_system_file?: string;
 }
 
 export interface VADMeterPayload {
@@ -169,6 +172,8 @@ export class ApiClient {
     title?: string;
     mic_device_index?: number;
     system_device_index?: number;
+    mic_device_name?: string;
+    system_device_name?: string;
   }): Promise<{ session_id: string; status: string; session: RecordingSession }> {
     const res = await this.request("/api/record/start", {
       method: "POST",
@@ -178,6 +183,31 @@ export class ApiClient {
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: "Failed to start recording" }));
       throw new Error(err.detail || "Failed to start recording");
+    }
+    return res.json();
+  }
+
+  async getFfmpegStatus(): Promise<{ installed: boolean; version: string | null }> {
+    return this.json("/api/system/ffmpeg");
+  }
+
+  async uploadAudio(
+    file: File,
+    language?: string,
+    title?: string,
+  ): Promise<{ session_id: string; status: string; job_id: string; session: RecordingSession }> {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (language) formData.append("language", language);
+    if (title) formData.append("title", title);
+
+    const res = await this.request("/api/upload/transcribe", {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(body?.detail || `Upload failed (HTTP ${res.status})`);
     }
     return res.json();
   }
@@ -226,12 +256,30 @@ export class ApiClient {
     return res.json();
   }
 
+  async openSessionFolder(sessionId: string): Promise<{ opened: boolean; path: string }> {
+    return this.json(`/api/recordings/${encodeURIComponent(sessionId)}/open_folder`, {
+      method: "POST",
+    });
+  }
+
   async preloadModel(): Promise<any> {
     return this.json("/api/model/preload", { method: "POST" });
   }
 
   async downloadModel(): Promise<any> {
     return this.json("/api/model/download", { method: "POST" });
+  }
+
+  async unloadModel(): Promise<any> {
+    return this.json("/api/model/unload", { method: "POST" });
+  }
+
+  async setRecordingLanguage(language: string): Promise<{ language: string; is_recording: boolean }> {
+    return this.json("/api/recording/language", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ language }),
+    });
   }
 
   connectWebSocket(onOpen?: () => void, onClose?: () => void) {
@@ -246,12 +294,17 @@ export class ApiClient {
       this.isConnected = false;
       onClose?.();
     };
+    let initialAttempts = 0;
     const schedule = (nextUrl: string) => {
       if (!this.shouldReconnect || generation !== this.wsGeneration || this.reconnectTimer) return;
+      const delay = this.connectionReported
+        ? 1500
+        : Math.min(50 + initialAttempts * 60, 1000);
+      initialAttempts++;
       this.reconnectTimer = setTimeout(() => {
         this.reconnectTimer = null;
         attemptConnect(nextUrl);
-      }, 2000);
+      }, delay);
     };
     const attemptConnect = (wsUrl: string) => {
       if (!this.shouldReconnect || generation !== this.wsGeneration) return;
@@ -267,6 +320,7 @@ export class ApiClient {
       socket.onopen = () => {
         if (socket !== this.ws || generation !== this.wsGeneration) return;
         this.isConnected = true;
+        initialAttempts = 0;
         if (!this.connectionReported) {
           this.connectionReported = true;
           onOpen?.();

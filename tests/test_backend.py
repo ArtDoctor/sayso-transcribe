@@ -337,6 +337,24 @@ def test_hq_completion_preserves_newer_user_edit():
         assert session["final_transcript"] == "My correction"
 
 
+def test_update_session_syncs_phrases_and_final_transcript():
+    """Updating phrases automatically synchronizes final_transcript when omitted."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = StorageManager(base_dir=Path(tmpdir))
+        storage.create_session("sess_sync_test")
+        storage.update_session(
+            "sess_sync_test",
+            {
+                "phrases": [
+                    {"phrase_id": "p1", "speaker": "Me", "text": "Hello world"},
+                    {"phrase_id": "p2", "speaker": "Them", "text": "Hi back"},
+                ]
+            },
+        )
+        session = storage.get_session("sess_sync_test")
+        assert session["final_transcript"] == "Me: Hello world\n\nThem: Hi back"
+
+
 def test_storage_rejects_path_traversal():
     with tempfile.TemporaryDirectory() as tmpdir:
         storage = StorageManager(base_dir=Path(tmpdir))
@@ -428,6 +446,279 @@ def test_recorder_get_current_audio():
     current = rec.get_current_audio()
     assert len(current) == 3200
     assert np.allclose(current[:1600], 0.2)
+
+
+def test_dual_audio_saving_and_retrieval():
+    """Verify separate mic and system audio tracks are saved and can be loaded independently."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        storage = StorageManager(base_dir=Path(tmpdir))
+        storage.create_session("sess_dual", mode="mic_and_system", title="Dual Audio Meeting")
+
+        mixed = np.ones(16000, dtype=np.float32) * 0.5
+        mic = np.ones(16000, dtype=np.float32) * 0.2
+        sys_audio = np.ones(16000, dtype=np.float32) * 0.8
+
+        paths = storage.save_session_audios(
+            "sess_dual",
+            audio_mixed=mixed,
+            audio_mic=mic,
+            audio_system=sys_audio,
+        )
+
+        assert Path(paths["audio"]).name == "audio.wav"
+        assert Path(paths["mic"]).name == "mic.wav"
+        assert Path(paths["system"]).name == "system.wav"
+
+        loaded_mixed = storage.load_audio("sess_dual", channel="mixed")
+        loaded_mic = storage.load_audio("sess_dual", channel="mic")
+        loaded_sys = storage.load_audio("sess_dual", channel="system")
+
+        assert loaded_mixed is not None and np.allclose(loaded_mixed[:100], 0.5, atol=1e-3)
+        assert loaded_mic is not None and np.allclose(loaded_mic[:100], 0.2, atol=1e-3)
+        assert loaded_sys is not None and np.allclose(loaded_sys[:100], 0.8, atol=1e-3)
+
+
+def test_cross_channel_turn_taking():
+    """Verify that when speaker B starts talking during speaker A's pause, speaker A's phrase finalizes immediately."""
+    phrases_a = []
+    phrases_b = []
+
+    seg_a = PhraseSegmenter(
+        stream_name="Them",
+        speech_threshold=0.3,
+        silence_duration_s=1.5,  # Normally waits 1.5s
+        min_phrase_duration_s=0.05,
+        min_speech_duration_s=0.05,
+        on_phrase_completed=lambda name, st, et, aud: phrases_a.append((name, st, et)),
+    )
+    seg_b = PhraseSegmenter(
+        stream_name="Me",
+        speech_threshold=0.3,
+        silence_duration_s=1.5,
+        min_phrase_duration_s=0.05,
+        min_speech_duration_s=0.05,
+        on_phrase_completed=lambda name, st, et, aud: phrases_b.append((name, st, et)),
+    )
+    seg_a.set_partner(seg_b)
+    seg_b.set_partner(seg_a)
+
+    seg_a.vad.predict_chunk = lambda chunk: 0.9
+    seg_b.vad.predict_chunk = lambda chunk: 0.0
+
+    # Speaker A speaks for 5 frames (0.16s)
+    speech = np.ones(512, dtype=np.float32) * 0.4
+    silence = np.zeros(512, dtype=np.float32)
+    t = 0.0
+    for _ in range(5):
+        seg_a.process_frame(speech, t)
+        t += 0.032
+
+    # Speaker A pauses for 2 frames (0.064s)
+    seg_a.vad.predict_chunk = lambda chunk: 0.0
+    for _ in range(2):
+        seg_a.process_frame(silence, t)
+        t += 0.032
+
+    # Speaker A has not finalized yet because silence < 1.5s
+    assert len(phrases_a) == 0
+    assert seg_a.is_speaking is True
+
+    # Now Speaker B begins speaking on mic!
+    seg_b.vad.predict_chunk = lambda chunk: 0.9
+    seg_b.process_frame(speech, t)
+
+    # Cross-channel turn switch must finalize Speaker A immediately!
+    assert len(phrases_a) == 1
+    assert phrases_a[0][0] == "Them"
+    assert seg_a.is_speaking is False
+
+
+def test_open_folder_api(monkeypatch):
+    """Verify open_folder API returns 200 and calls OS open."""
+    client = TestClient(app)
+    from backend.main import storage
+
+    sid = "sess_open_test_unique"
+    storage.delete_session(sid)
+    try:
+        storage.create_session(sid, mode="mic_only")
+        sdir = storage.get_session_dir(sid)
+
+        opened_paths = []
+        import os
+        monkeypatch.setattr(os, "startfile", lambda p: opened_paths.append(p))
+
+        res = client.post(f"/api/recordings/{sid}/open_folder")
+        assert res.status_code == 200
+        assert res.json()["opened"] is True
+        assert len(opened_paths) == 1
+        assert str(sdir.resolve()) in opened_paths[0]
+    finally:
+        storage.delete_session(sid)
+
+
+def test_resolve_device_index():
+    """Verify resolve_device_index matches by name, fuzzy, and falls back to default on disconnection."""
+    from backend.audio_devices import resolve_device_index
+
+    class FakePyAudio:
+        def __init__(self):
+            self.devices = [
+                {"index": 0, "name": "Microsoft Sound Mapper", "maxInputChannels": 2, "isLoopbackDevice": False},
+                {"index": 1, "name": "LS24AG30x (NVIDIA High Definition Audio) [Loopback]", "maxInputChannels": 2, "isLoopbackDevice": True},
+                {"index": 2, "name": "Headphones (Arctis 7+) [Loopback]", "maxInputChannels": 2, "isLoopbackDevice": True},
+                {"index": 3, "name": "Microphone (Arctis 7+)", "maxInputChannels": 2, "isLoopbackDevice": False},
+            ]
+        def get_device_count(self):
+            return len(self.devices)
+        def get_device_info_by_index(self, idx):
+            return self.devices[idx]
+        def get_default_wasapi_loopback(self):
+            return self.devices[1]
+        def get_default_input_device_info(self):
+            return self.devices[0]
+
+    pa = FakePyAudio()
+
+    # 1. Exact match by name for headphones loopback
+    idx = resolve_device_index(pa, target_name="Headphones (Arctis 7+) [Loopback]", is_loopback=True)
+    assert idx == 2
+
+    # 2. Fuzzy match by name
+    idx = resolve_device_index(pa, target_name="Arctis 7+", is_loopback=True)
+    assert idx == 2
+
+    # 3. Match mic by name
+    idx = resolve_device_index(pa, target_name="Microphone (Arctis 7+)", is_loopback=False)
+    assert idx == 3
+
+    # 4. Disconnected device: does NOT fall back to target_index 1 (which would be monitor LS24); falls back to default
+    idx = resolve_device_index(pa, target_name="Disconnected Galaxy Buds [Loopback]", target_index=1, is_loopback=True)
+    assert idx == 1
+
+    # 5. Raw index fallback when no target_name specified
+    idx = resolve_device_index(pa, target_name=None, target_index=2, is_loopback=True)
+    assert idx == 2
+
+
+def test_ffmpeg_utils_and_api(monkeypatch):
+    """Verify ffmpeg installation check, version API, and status reporting."""
+    client = TestClient(app)
+
+    status = client.get("/api/status").json()
+    assert "ffmpeg_installed" in status
+
+    ffmpeg_res = client.get("/api/system/ffmpeg").json()
+    assert "installed" in ffmpeg_res
+    assert isinstance(ffmpeg_res["installed"], bool)
+
+
+def test_upload_transcribe_missing_ffmpeg(monkeypatch):
+    """Verify upload fails with explicit 'ffmpeg not installed, please install.' when ffmpeg is absent."""
+    import backend.main as main_module
+    monkeypatch.setattr(main_module, "is_ffmpeg_installed", lambda: False)
+    client = TestClient(app)
+
+    fake_file_content = b"fake audio content"
+    res = client.post(
+        "/api/upload/transcribe",
+        files={"file": ("test.mp3", fake_file_content, "audio/mpeg")},
+        data={"language": "en", "title": "Test Missing FFmpeg"},
+    )
+    assert res.status_code == 400
+    assert "ffmpeg not installed, please install." in res.json()["detail"]
+
+
+def test_upload_transcribe_success(monkeypatch):
+    """Verify upload succeeds, converts, and dispatches HQ transcription."""
+    import time
+    from backend.main import storage, stt_engine
+    import backend.main as main_module
+
+    monkeypatch.setattr(main_module, "is_ffmpeg_installed", lambda: True)
+    monkeypatch.setattr(stt_engine, "is_model_downloaded", lambda: True)
+
+    class FakeModel:
+        def transcribe(self, *_args, **kwargs):
+            return "Transcribed uploaded file."
+
+    stt_engine.model = FakeModel()
+    stt_engine.status = "ready"
+
+    import soundfile as sf
+
+    # Mock conversion to write valid 16kHz WAV
+    def fake_convert(input_path, output_path):
+        sample_audio = (0.2 * np.sin(np.linspace(0, 10, 16000))).astype(np.float32)
+        sf.write(str(output_path), sample_audio, 16000, subtype="PCM_16")
+
+    monkeypatch.setattr(main_module, "convert_audio_to_wav_16k", fake_convert)
+
+    client = TestClient(app)
+    fake_audio_bytes = b"ID3\x03\x00\x00\x00\x00\x00#TSSE"
+
+    created_sess_id = None
+    try:
+        res = client.post(
+            "/api/upload/transcribe",
+            files={"file": ("interview.mp3", fake_audio_bytes, "audio/mpeg")},
+            data={"language": "en", "title": "Customer Interview"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "processing_hq"
+        created_sess_id = data["session_id"]
+        assert created_sess_id.startswith("sess_")
+        assert data["session"]["title"] == "Customer Interview"
+
+        # Wait for background HQ pass
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            sess = storage.get_session(created_sess_id)
+            if sess and sess.get("status") == "completed":
+                break
+            time.sleep(0.05)
+
+        assert sess["status"] == "completed"
+        assert sess["mode"] == "uploaded"
+        assert (storage.get_session_dir(created_sess_id) / "audio.wav").exists()
+    finally:
+        if created_sess_id:
+            storage.delete_session(created_sess_id)
+
+
+def test_real_ffmpeg_conversion_if_installed():
+    """If ffmpeg is installed on PATH, test actual subprocess execution and audio conversion."""
+    from backend.ffmpeg_utils import is_ffmpeg_installed, convert_audio_to_wav_16k, get_ffmpeg_version
+    if not is_ffmpeg_installed():
+        pytest.skip("ffmpeg not installed on this host")
+
+    ver = get_ffmpeg_version()
+    assert ver is not None and "ffmpeg" in ver.lower()
+
+    import soundfile as sf
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        # Create an input 44.1kHz stereo WAV file
+        duration = 0.5
+        sr = 44100
+        t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+        stereo_data = np.stack([0.3 * np.sin(2 * np.pi * 440 * t), 0.3 * np.cos(2 * np.pi * 880 * t)], axis=-1)
+        in_file = tdp / "input_44k_stereo.wav"
+        out_file = tdp / "output_16k_mono.wav"
+        sf.write(str(in_file), stereo_data, sr)
+
+        # Run real ffmpeg conversion
+        convert_audio_to_wav_16k(in_file, out_file)
+
+        assert out_file.exists()
+        assert out_file.stat().st_size > 0
+        converted_data, converted_sr = sf.read(str(out_file))
+        assert converted_sr == 16000
+        assert converted_data.ndim == 1  # mono!
+        assert len(converted_data) == int(16000 * duration)
+
+
 
 
 

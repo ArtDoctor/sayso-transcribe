@@ -76,6 +76,15 @@
                 <span class="sidebar-label">Record</span>
               </button>
 
+              <button id="tab-upload" class="sidebar-btn tab-btn" role="tab" aria-selected="false" aria-controls="view-upload">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="sidebar-icon">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                <span class="sidebar-label">Upload</span>
+              </button>
+
               <button id="tab-history" class="sidebar-btn tab-btn" role="tab" aria-selected="false" aria-controls="view-history">
                 <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="sidebar-icon">
                   <circle cx="12" cy="12" r="9" />
@@ -88,6 +97,26 @@
           </div>
 
           <div class="sidebar-footer">
+            <div class="sidebar-lang-container" id="sidebar-lang-container" title="Transcription Language">
+              <span id="sidebar-lang-flag" class="sidebar-lang-flag" aria-hidden="true">🇺🇸</span>
+              <select id="sidebar-language-select" class="sidebar-lang-select" aria-label="Transcription Language">
+                <option value="en" data-flag="🇺🇸" selected>English</option>
+                <option value="de" data-flag="🇩🇪">German</option>
+                <option value="fr" data-flag="🇫🇷">French</option>
+                <option value="es" data-flag="🇪🇸">Spanish</option>
+                <option value="it" data-flag="🇮🇹">Italian</option>
+                <option value="pt" data-flag="🇵🇹">Portuguese</option>
+                <option value="nl" data-flag="🇳🇱">Dutch</option>
+                <option value="pl" data-flag="🇵🇱">Polish</option>
+                <option value="el" data-flag="🇬🇷">Greek</option>
+                <option value="ar" data-flag="🇸🇦">Arabic</option>
+                <option value="ja" data-flag="🇯🇵">Japanese</option>
+                <option value="zh" data-flag="🇨🇳">Chinese</option>
+                <option value="vi" data-flag="🇻🇳">Vietnamese</option>
+                <option value="ko" data-flag="🇰🇷">Korean</option>
+              </select>
+            </div>
+
             <div class="sidebar-status-container">
               <button id="btn-status-indicator" class="sidebar-btn sidebar-status-btn" title="Status: Connecting (Click for diagnostics)" aria-label="System status and diagnostics">
                 <span id="status-circle-dot" class="status-circle-dot status-offline"></span>
@@ -245,6 +274,102 @@
           </div>
         </section>
 
+        <!-- VIEW: UPLOAD -->
+        <section id="view-upload" class="view-panel" role="tabpanel" aria-labelledby="tab-upload">
+          <div class="upload-container">
+            <!-- FFmpeg Alert Banner (Shown if ffmpeg is not installed) -->
+            <div id="ffmpeg-alert-banner" class="ffmpeg-alert-card hidden">
+              <div class="ffmpeg-alert-icon">⚠️</div>
+              <div class="ffmpeg-alert-body">
+                <div class="ffmpeg-alert-title">ffmpeg not installed, please install.</div>
+                <div class="ffmpeg-alert-desc">
+                  Sayso uses FFmpeg to process and convert audio and video files. Please install FFmpeg on your system and make sure it is added to your PATH.
+                </div>
+              </div>
+            </div>
+
+            <!-- Upload Card -->
+            <div class="minimal-card upload-card">
+              <div class="card-header-compact">
+                <span class="card-tag">AUDIO CONVERTER & STT</span>
+                <h3>Upload & Transcribe</h3>
+              </div>
+              <p class="minimal-desc">
+                Transcribe any audio or video file. Works with any format (MP3, WAV, M4A, FLAC, AAC, OGG, WMA, MP4, MKV, WebM, etc.).
+              </p>
+
+              <!-- Drag and drop zone -->
+              <div id="upload-dropzone" class="upload-dropzone" tabindex="0" role="button" aria-label="Upload audio file drop zone">
+                <input type="file" id="upload-file-input" class="hidden" accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.wma,.opus,.mp4,.mkv,.webm,.mov,.avi" />
+                <div class="dropzone-icon">
+                  <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                </div>
+                <div class="dropzone-text">
+                  <span class="dropzone-primary">Choose a file</span> or drag & drop here
+                </div>
+                <div class="dropzone-hint">Any audio or video format with audio track</div>
+              </div>
+
+              <!-- File Selected Details (hidden initially) -->
+              <div id="upload-file-details" class="upload-file-details hidden">
+                <div class="selected-file-row">
+                  <div class="selected-file-meta">
+                    <span id="selected-file-name" class="selected-file-name">filename.mp3</span>
+                    <span id="selected-file-size" class="selected-file-size">0 MB</span>
+                  </div>
+                  <button id="btn-remove-file" class="icon-btn-sm" title="Remove file" aria-label="Remove file">✕</button>
+                </div>
+
+                <div class="upload-options-row">
+                  <div class="upload-field">
+                    <label for="upload-title-input" class="field-label">Title</label>
+                    <input type="text" id="upload-title-input" class="minimal-input" placeholder="Title (optional)" />
+                  </div>
+
+                  <div class="upload-field">
+                    <label for="upload-language-select" class="field-label">Language</label>
+                    <select id="upload-language-select" class="minimal-select">
+                      <option value="en" selected>🇺🇸 English</option>
+                      <option value="de">🇩🇪 German</option>
+                      <option value="fr">🇫🇷 French</option>
+                      <option value="es">🇪🇸 Spanish</option>
+                      <option value="it">🇮🇹 Italian</option>
+                      <option value="pt">🇵🇹 Portuguese</option>
+                      <option value="nl">🇳🇱 Dutch</option>
+                      <option value="pl">🇵🇱 Polish</option>
+                      <option value="el">🇬🇷 Greek</option>
+                      <option value="ar">🇸🇦 Arabic</option>
+                      <option value="ja">🇯🇵 Japanese</option>
+                      <option value="zh">🇨🇳 Chinese</option>
+                      <option value="vi">🇻🇳 Vietnamese</option>
+                      <option value="ko">🇰🇷 Korean</option>
+                    </select>
+                  </div>
+                </div>
+
+                <button id="btn-submit-upload" class="btn btn-primary btn-upload-start">
+                  Transcribe File
+                </button>
+              </div>
+
+              <!-- Upload / Conversion In-Progress Box (hidden initially) -->
+              <div id="upload-progress-card" class="upload-progress-card hidden">
+                <div class="upload-progress-status">
+                  <span class="spinner" aria-hidden="true"></span>
+                  <span id="upload-status-text">Processing file…</span>
+                </div>
+                <div class="progress-track" style="margin-top: 12px;">
+                  <div id="upload-progress-bar" class="progress-fill" style="width: 0%;"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- VIEW: HISTORY -->
         <section id="view-history" class="view-panel" role="tabpanel" aria-labelledby="tab-history">
           <div class="history-layout">
@@ -307,6 +432,12 @@
                   <button id="btn-copy-transcript" class="btn btn-sm">Copy</button>
                   <button id="btn-download-txt" class="btn btn-sm">TXT</button>
                   <button id="btn-download-srt" class="btn btn-sm">SRT</button>
+                  <button id="btn-open-folder" class="btn btn-sm" title="Open recording folder in File Explorer">
+                    <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-right: 4px; vertical-align: -1px;">
+                      <path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3.293a1.5 1.5 0 0 1 1.06.44l1.414 1.414A1.5 1.5 0 0 0 9.828 4H13a1.5 1.5 0 0 1 1.5 1.5v7A1.5 1.5 0 0 1 13 14H3a1.5 1.5 0 0 1-1.5-1.5v-9z"/>
+                    </svg>
+                    Folder
+                  </button>
                   <button id="btn-delete-session" class="btn btn-sm btn-delete">Delete</button>
                 </div>
 
@@ -364,8 +495,12 @@
                 <option value="pt">Portuguese (pt)</option>
                 <option value="nl">Dutch (nl)</option>
                 <option value="pl">Polish (pl)</option>
+                <option value="el">Greek (el)</option>
+                <option value="ar">Arabic (ar)</option>
                 <option value="ja">Japanese (ja)</option>
                 <option value="zh">Chinese (zh)</option>
+                <option value="vi">Vietnamese (vi)</option>
+                <option value="ko">Korean (ko)</option>
               </select>
             </div>
 
@@ -408,6 +543,28 @@
       </div>
 
       <div id="app-status-message" class="app-status-message hidden" role="status" aria-live="polite"></div>
+
+      <!-- MODEL LOADING POPUP (Gray popup shown only while loading weights into memory) -->
+      <div id="model-loading-popup" class="model-loading-popup hidden" role="status" aria-live="polite">
+        <span class="loading-spinner-gray" aria-hidden="true"></span>
+        <span id="model-loading-popup-text">Loading model weights into memory…</span>
+      </div>
+
+      <!-- GLOBAL ERROR POPUP (Red popup with copyable error message) -->
+      <div id="global-error-popup" class="global-error-popup hidden" role="alert" aria-live="assertive">
+        <div class="global-error-content">
+          <svg class="global-error-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <span id="global-error-text" class="global-error-text"></span>
+        </div>
+        <div class="global-error-actions">
+          <button id="btn-copy-error" class="btn-error-copy" type="button" title="Copy error message">Copy</button>
+          <button id="btn-close-error" class="btn-error-close" type="button" aria-label="Dismiss error">✕</button>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>
