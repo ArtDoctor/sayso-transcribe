@@ -124,9 +124,30 @@ describe("ApiClient", () => {
       mode: "mic_only",
       mic_device_name: "Headphones Mic",
       system_device_name: "Headphones Loopback",
+      user_name: "Artur",
     });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.mic_device_name).toBe("Headphones Mic");
     expect(body.system_device_name).toBe("Headphones Loopback");
+    expect(body.user_name).toBe("Artur");
+  });
+
+  it("calls renameSpeaker endpoint with old and new names", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ id: "sess_1", phrases: [], final_transcript: "Alice: hello" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient();
+    const res = await client.renameSpeaker("sess_1", "Speaker 1", "Alice");
+    expect(res.id).toBe("sess_1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const url = String(fetchMock.mock.calls[0][0]);
+    expect(url).toContain("/api/recordings/sess_1/rename_speaker");
+    expect(fetchMock.mock.calls[0][1].method).toBe("POST");
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.old_name).toBe("Speaker 1");
+    expect(body.new_name).toBe("Alice");
   });
 });

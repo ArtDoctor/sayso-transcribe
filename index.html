@@ -378,6 +378,14 @@
                 <span class="sidebar-heading">Recordings</span>
                 <button id="btn-refresh-history" class="icon-btn-sm" title="Refresh recordings" aria-label="Refresh recordings">↻</button>
               </div>
+              <div class="history-search-container">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" class="search-icon" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"></circle>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <input type="text" id="history-search-input" class="history-search-input" placeholder="Search recordings…" aria-label="Search recordings" />
+                <button id="btn-clear-search" class="icon-btn-sm search-clear-btn hidden" title="Clear search" aria-label="Clear search">✕</button>
+              </div>
               <div id="sessions-list" class="sessions-scroll-list" aria-live="polite" aria-busy="false"></div>
             </aside>
 
@@ -469,6 +477,13 @@
 
           <div class="modal-body">
             <div class="setting-group">
+              <label for="input-user-name">Your Name</label>
+              <input type="text" id="input-user-name" class="minimal-input" placeholder="e.g. Alex (Label used for your microphone speech)" aria-label="Your Name" />
+            </div>
+
+            <hr class="divider" />
+
+            <div class="setting-group">
               <label for="select-mic-device">Microphone</label>
               <select id="select-mic-device" class="minimal-select"></select>
             </div>
@@ -511,6 +526,16 @@
               <div class="model-meta-row">
                 <span id="settings-model-status-text" class="text-sub">Status: Checking...</span>
                 <button id="btn-preload-model" class="btn btn-sm">Download / Load</button>
+              </div>
+            </div>
+
+            <hr class="divider" />
+
+            <div class="setting-group">
+              <label>Application</label>
+              <div class="setting-row-quit">
+                <span class="text-sub">Closing the window keeps Sayso in the background.</span>
+                <button id="btn-quit-app" class="btn btn-sm btn-delete" title="Exit Sayso completely and stop all background processes">Quit Sayso</button>
               </div>
             </div>
           </div>
@@ -563,6 +588,51 @@
         <div class="global-error-actions">
           <button id="btn-copy-error" class="btn-error-copy" type="button" title="Copy error message">Copy</button>
           <button id="btn-close-error" class="btn-error-close" type="button" aria-label="Dismiss error">✕</button>
+        </div>
+      </div>
+
+      <!-- RENAME SPEAKER MODAL -->
+      <div id="rename-speaker-modal" class="modal-overlay hidden">
+        <div class="modal-card modal-card-sm" role="dialog" aria-modal="true" aria-labelledby="rename-speaker-title">
+          <div class="modal-head">
+            <h3 id="rename-speaker-title">Rename Speaker</h3>
+            <button id="btn-close-rename-speaker" class="icon-btn-sm" aria-label="Close">✕</button>
+          </div>
+          <div class="modal-body">
+            <p id="rename-speaker-desc" class="minimal-desc">Rename speaker across all phrases in this meeting.</p>
+            <div class="setting-group">
+              <label for="input-speaker-new-name">New Name</label>
+              <input type="text" id="input-speaker-new-name" class="minimal-input" placeholder="e.g. Sarah" aria-label="New Speaker Name" />
+            </div>
+          </div>
+          <div class="modal-foot">
+            <button id="btn-cancel-rename-speaker" class="btn btn-sm btn-outline">Cancel</button>
+            <button id="btn-confirm-rename-speaker" class="btn btn-sm btn-primary">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MINI FLOATING WIDGET (Active during recording or ?view=mini) -->
+    <div id="mini-floating-widget" class="mini-floating-widget hidden" data-tauri-drag-region>
+      <div class="mini-widget-body" id="mini-widget-body" data-tauri-drag-region>
+        <div class="mini-vad-meter" id="mini-vad-meter" title="Live audio activity" data-tauri-drag-region>
+          <div class="mini-vad-bar" id="mini-vad-1"></div>
+          <div class="mini-vad-bar" id="mini-vad-2"></div>
+          <div class="mini-vad-bar" id="mini-vad-3"></div>
+        </div>
+        <div class="mini-actions">
+          <button id="btn-mini-open-app" class="mini-btn mini-btn-icon" title="Open Sayso window" aria-label="Open Sayso window">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="10 3 13 3 13 6"/>
+              <polyline points="6 13 3 13 3 10"/>
+              <line x1="13" y1="3" x2="8.5" y2="7.5"/>
+              <line x1="3" y1="13" x2="7.5" y2="8.5"/>
+            </svg>
+          </button>
+          <button id="btn-mini-stop-rec" class="mini-btn mini-btn-stop" title="Stop Recording and finish transcript" aria-label="Stop Recording">
+            <span class="mini-stop-icon"></span>
+          </button>
         </div>
       </div>
     </div>

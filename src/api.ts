@@ -174,6 +174,7 @@ export class ApiClient {
     system_device_index?: number;
     mic_device_name?: string;
     system_device_name?: string;
+    user_name?: string;
   }): Promise<{ session_id: string; status: string; session: RecordingSession }> {
     const res = await this.request("/api/record/start", {
       method: "POST",
@@ -237,6 +238,18 @@ export class ApiClient {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(updates),
+    });
+  }
+
+  async renameSpeaker(
+    sessionId: string,
+    oldName: string,
+    newName: string
+  ): Promise<RecordingSession> {
+    return this.json(`/api/recordings/${encodeURIComponent(sessionId)}/rename_speaker`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ old_name: oldName, new_name: newName }),
     });
   }
 

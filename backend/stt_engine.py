@@ -86,6 +86,7 @@ class STTEngine:
         self._inference_lock = threading.Lock()
         self._hq_jobs_lock = threading.Lock()
         self._active_hq_jobs: Dict[str, str] = {}
+        self._diarizer = None
 
         # Start phrase processing worker
         self._stop_event.clear()
@@ -148,6 +149,8 @@ class STTEngine:
 
     def is_model_downloaded(self) -> bool:
         """Check if all required Cohere model files are present in the Hugging Face cache (lock-free)."""
+        if self.model is not None:
+            return True
         return self.get_cached_model_path() is not None
 
     def set_status(self, new_status: str, error_msg: Optional[str] = None):
@@ -191,10 +194,16 @@ class STTEngine:
             hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
             for fname in self.REQUIRED_FILES:
                 # If file is already cached, skip downloading
-                cached_file = try_to_load_from_cache(COHERE_MODEL_ID, fname, token=hf_token)
-                if isinstance(cached_file, str):
-                    logger.info(f"Model file '{fname}' already cached at {cached_file}")
-                    continue
+                try:
+                    cached_file = try_to_load_from_cache(COHERE_MODEL_ID, fname)
+                    if not isinstance(cached_file, str):
+                        from huggingface_hub.constants import HUGGINGFACE_HUB_CACHE
+                        cached_file = try_to_load_from_cache(COHERE_MODEL_ID, fname, cache_dir=HUGGINGFACE_HUB_CACHE)
+                    if isinstance(cached_file, str) and os.path.exists(cached_file):
+                        logger.info(f"Model file '{fname}' already cached at {cached_file}")
+                        continue
+                except Exception as cache_err:
+                    logger.debug("Local cache lookup for %s skipped: %s", fname, cache_err)
 
                 logger.info(f"Downloading model file: {fname}...")
                 engine_self.download_progress["filename"] = fname
@@ -363,6 +372,55 @@ class STTEngine:
         transcribe_start = time.perf_counter()
 
         if self.model is not None:
+            # Check if live phrase contains multiple speakers (if CUDA diarizer is active and phrase duration >= 2.5s)
+            phrase_dur = item.end_time - item.start_time
+            if (
+                phrase_dur >= 2.5
+                and self._diarizer is not None
+                and self._diarizer.pipeline is not None
+                and hasattr(self._diarizer, "device")
+                and self._diarizer.device == "cuda"
+            ):
+                try:
+                    turns = self._diarizer.diarize_audio(item.audio_np, sample_rate=SAMPLE_RATE)
+                    distinct_speakers = set(t["speaker"] for t in turns) if turns else set()
+                    if len(distinct_speakers) > 1:
+                        sub_segments = self._diarizer.segment_audio_by_turns(
+                            item.audio_np, SAMPLE_RATE, turns, max_chunk_s=MAX_AUDIO_CLIP_S
+                        )
+                        if len(sub_segments) > 1:
+                            for s_idx, s_seg in enumerate(sub_segments):
+                                s_tensor = torch.from_numpy(s_seg["audio"].astype(np.float32)).float()
+                                with self._inference_lock:
+                                    try:
+                                        s_text = self.model.transcribe(
+                                            s_tensor,
+                                            language=item.language,
+                                            punctuation=PUNCTUATION,
+                                            max_new_tokens=256,
+                                            batch_size=BATCH_SIZE,
+                                            long_form_threshold_s=MAX_AUDIO_CLIP_S,
+                                        )
+                                    except TypeError:
+                                        s_text = self.model.transcribe(s_tensor)
+                                s_clean = s_text.strip() if isinstance(s_text, str) else ""
+                                if s_clean and self.on_phrase_transcribed:
+                                    s_st = round(item.start_time + s_seg["start_time"], 2)
+                                    s_et = round(item.start_time + s_seg["end_time"], 2)
+                                    self.on_phrase_transcribed({
+                                        "session_id": item.session_id,
+                                        "phrase_id": f"{item.phrase_id}_sub{s_idx}" if s_idx > 0 else item.phrase_id,
+                                        "speaker": s_seg["speaker"],
+                                        "start_time": s_st,
+                                        "end_time": s_et,
+                                        "duration": round(s_et - s_st, 2),
+                                        "text": s_clean,
+                                        "latency_s": round(time.perf_counter() - transcribe_start, 2),
+                                    })
+                            return
+                except Exception as e:
+                    logger.debug("Live multi-speaker separation error: %s", e)
+
             try:
                 import torch
                 prev_status = self.status
@@ -436,6 +494,12 @@ class STTEngine:
             if self._active_hq_jobs.get(session_id) == job_id:
                 self._active_hq_jobs.pop(session_id, None)
 
+    def get_diarizer(self):
+        if self._diarizer is None:
+            from .diarization import SpeakerDiarizer
+            self._diarizer = SpeakerDiarizer()
+        return self._diarizer
+
     def run_high_quality_pass(
         self,
         session_id: str,
@@ -445,6 +509,7 @@ class STTEngine:
         existing_phrases: Optional[List[Dict[str, Any]]] = None,
         audio_mic_np: Optional[np.ndarray] = None,
         audio_sys_np: Optional[np.ndarray] = None,
+        user_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run one serialized HQ pass with progress updates and report explicit success or failure."""
         if job_id is None:
@@ -471,31 +536,71 @@ class STTEngine:
                 "thank you for watching", "thanks for watching", "bye", "bye bye"
             }
 
+            my_speaker = user_name.strip() if user_name and user_name.strip() else "Me"
+
             if existing_phrases and len(existing_phrases) > 0:
+                # 0. Diarize system audio and mic audio to separate multiple participants
+                sys_turns = []
+                if audio_sys_np is not None and len(audio_sys_np) > SAMPLE_RATE * 0.8:
+                    try:
+                        sys_turns = self.get_diarizer().diarize_audio(audio_sys_np, sample_rate=SAMPLE_RATE)
+                    except Exception as e:
+                        logger.warning("System audio diarization failed: %s", e)
+
+                mic_turns = []
+                if audio_mic_np is not None and len(audio_mic_np) > SAMPLE_RATE * 0.8:
+                    try:
+                        mic_turns = self.get_diarizer().diarize_audio(audio_mic_np, sample_rate=SAMPLE_RATE)
+                    except Exception as e:
+                        logger.warning("Mic audio diarization failed: %s", e)
+
                 # 1. Normalize speaker labels and sort chronologically by start_time
                 normalized_phrases = []
                 for p in existing_phrases:
                     spk = p.get("speaker", "Me")
-                    if spk.lower() in ("you", "me"):
-                        spk = "Me"
-                    elif spk.lower() in ("them", "system", "remote"):
-                        spk = "Them"
+                    source = "mic" if spk.lower() in ("you", "me") else "sys"
                     st = float(p.get("start_time", 0.0))
                     et = float(p.get("end_time", st))
                     if et > st:
                         normalized_phrases.append({
-                            "speaker": spk,
+                            "phrase_id": p.get("phrase_id", f"p_{int(st * 100)}"),
+                            "speaker": "Me" if source == "mic" else "Them",
+                            "source": source,
                             "start_time": st,
                             "end_time": et,
                             "text": p.get("text", ""),
                         })
                 normalized_phrases.sort(key=lambda p: p["start_time"])
 
-                # 2. Resolve cross-speaker conversational overlaps:
+                # 2. Split phrases that contain multiple speakers using diarized turns
+                them_phrases = [p for p in normalized_phrases if p["source"] == "sys"]
+                me_phrases = [p for p in normalized_phrases if p["source"] == "mic"]
+
+                if sys_turns:
+                    them_phrases = self.get_diarizer().split_phrases_by_speaker_turns(
+                        them_phrases, sys_turns, default_speaker="Them", min_speaker_dur=0.4
+                    )
+                else:
+                    for p in them_phrases:
+                        p["speaker"] = "Them"
+
+                distinct_mic_speakers = set(t["speaker"] for t in mic_turns) if mic_turns else set()
+                if len(distinct_mic_speakers) > 1:
+                    me_phrases = self.get_diarizer().split_phrases_by_speaker_turns(
+                        me_phrases, mic_turns, default_speaker=my_speaker, min_speaker_dur=0.4
+                    )
+                else:
+                    for p in me_phrases:
+                        p["speaker"] = my_speaker
+
+                all_phrases = them_phrases + me_phrases
+                all_phrases.sort(key=lambda p: p["start_time"])
+
+                # 3. Resolve cross-speaker conversational overlaps:
                 # If speaker A spans [stA, etA] and speaker B speaks at [stB, etB] inside A's interval,
                 # split speaker A around speaker B so speaker A's before and after turns become distinct chunks!
                 resolved_segments: List[Dict[str, Any]] = []
-                for p in normalized_phrases:
+                for p in all_phrases:
                     if not resolved_segments:
                         resolved_segments.append(dict(p))
                         continue
@@ -507,7 +612,9 @@ class STTEngine:
                         resolved_segments.append(dict(p))
                         if orig_prev_end > p["end_time"] + 0.3:
                             resolved_segments.append({
+                                "phrase_id": f"{prev.get('phrase_id', 'p')}_after",
                                 "speaker": prev["speaker"],
+                                "source": prev.get("source", "mic"),
                                 "start_time": p["end_time"],
                                 "end_time": orig_prev_end,
                                 "text": "",
@@ -518,20 +625,22 @@ class STTEngine:
                 resolved_segments = [s for s in resolved_segments if (s["end_time"] - s["start_time"]) >= 0.2]
                 resolved_segments.sort(key=lambda s: s["start_time"])
 
-                # 3. Merge consecutive short phrases of the SAME speaker into larger chunks (up to 25s)
+                # 4. Merge consecutive short phrases of the EXACT SAME speaker into larger chunks (up to 25s)
+                # NEVER merge different speakers across speaker turns
                 merged_segments = []
                 curr = None
                 for seg in resolved_segments:
                     spk = seg["speaker"]
+                    src = seg.get("source", "mic")
                     st = seg["start_time"]
                     et = seg["end_time"]
                     if curr is None:
-                        curr = {"speaker": spk, "start_time": st, "end_time": et}
-                    elif curr["speaker"] == spk and (st - curr["end_time"] <= 2.5) and (et - curr["start_time"] <= MAX_AUDIO_CLIP_S):
+                        curr = {"speaker": spk, "source": src, "start_time": st, "end_time": et, "phrase_id": seg.get("phrase_id")}
+                    elif curr["speaker"] == spk and (st - curr["end_time"] <= 2.0) and (et - curr["start_time"] <= MAX_AUDIO_CLIP_S):
                         curr["end_time"] = et
                     else:
                         merged_segments.append(curr)
-                        curr = {"speaker": spk, "start_time": st, "end_time": et}
+                        curr = {"speaker": spk, "source": src, "start_time": st, "end_time": et, "phrase_id": seg.get("phrase_id")}
                 if curr:
                     merged_segments.append(curr)
 
@@ -553,10 +662,14 @@ class STTEngine:
                     dur = et - st
 
                     # Pick clean channel audio if available, else fall back to mixed full_audio_np
-                    if seg["speaker"] == "Them" and audio_sys_np is not None and len(audio_sys_np) > 0:
+                    if seg.get("source") == "sys" and audio_sys_np is not None and len(audio_sys_np) > 0:
                         source_stream = audio_sys_np
-                    elif seg["speaker"] == "Me" and audio_mic_np is not None and len(audio_mic_np) > 0:
+                    elif seg.get("source") == "mic" and audio_mic_np is not None and len(audio_mic_np) > 0:
                         source_stream = audio_mic_np
+                    elif seg["speaker"] == my_speaker and audio_mic_np is not None and len(audio_mic_np) > 0:
+                        source_stream = audio_mic_np
+                    elif audio_sys_np is not None and len(audio_sys_np) > 0:
+                        source_stream = audio_sys_np
                     else:
                         source_stream = full_audio_np
 
@@ -615,81 +728,164 @@ class STTEngine:
                 else:
                     full_text = ""
             else:
-                # Fallback to continuous audio chunking when phrase metadata is not available
-                pieces = [full_audio_np]
+                # Continuous audio / upload / fallback: Diarize first to preserve speaker boundaries!
+                full_turns = []
                 try:
-                    from nano_cohere_transcribe.chunk import split_audio_chunks_energy
-                    pieces = split_audio_chunks_energy(
-                        waveform=full_audio_np,
-                        sample_rate=SAMPLE_RATE,
-                        max_audio_clip_s=MAX_AUDIO_CLIP_S,
-                        overlap_chunk_second=OVERLAP_CHUNK_SECOND,
-                        min_energy_window_samples=1600,
-                    )
+                    full_turns = self.get_diarizer().diarize_audio(full_audio_np, sample_rate=SAMPLE_RATE)
                 except Exception as e:
-                    logger.warning("Could not split audio into energy chunks: %s", e)
-                    pieces = [full_audio_np]
+                    logger.warning("Continuous audio diarization failed: %s", e)
 
-                total_chunks = max(1, len(pieces))
-                chunk_texts: List[str] = []
-                current_start_s = 0.0
+                distinct_speakers = set(t["speaker"] for t in full_turns) if full_turns else set()
 
-                for idx, piece in enumerate(pieces):
-                    pct = int((idx / total_chunks) * 100)
-                    if self.on_hq_progress:
-                        self.on_hq_progress({
-                            "session_id": session_id,
-                            "job_id": job_id,
-                            "percent": pct,
-                            "chunk": idx + 1,
-                            "total_chunks": total_chunks,
-                        })
+                if len(distinct_speakers) > 1:
+                    # Multi-speaker audio: segment directly by speaker turns so speakers are NEVER fused
+                    turn_segments = self.get_diarizer().segment_audio_by_turns(
+                        full_audio_np, SAMPLE_RATE, full_turns, max_chunk_s=MAX_AUDIO_CLIP_S
+                    )
+                else:
+                    turn_segments = []
 
-                    piece_tensor = torch.from_numpy(piece.astype(np.float32)).float()
-                    with self._inference_lock:
-                        try:
-                            piece_text = self.model.transcribe(
-                                piece_tensor,
-                                language=language,
-                                punctuation=True,
-                                batch_size=BATCH_SIZE,
-                                max_new_tokens=512,
-                                long_form_threshold_s=MAX_AUDIO_CLIP_S,
-                            )
-                        except TypeError:
-                            # Compatibility fallback for FakeModel in unit tests
-                            piece_text = self.model.transcribe(piece_tensor)
-                    
-                    text_clean = piece_text.strip() if isinstance(piece_text, str) else ""
-                    chunk_texts.append(text_clean)
+                if turn_segments:
+                    total_chunks = len(turn_segments)
+                    for idx, tseg in enumerate(turn_segments):
+                        pct = int((idx / total_chunks) * 100)
+                        if self.on_hq_progress:
+                            self.on_hq_progress({
+                                "session_id": session_id,
+                                "job_id": job_id,
+                                "percent": pct,
+                                "chunk": idx + 1,
+                                "total_chunks": total_chunks,
+                            })
 
-                    piece_dur = len(piece) / SAMPLE_RATE
-                    st = current_start_s
-                    et = current_start_s + piece_dur
-                    current_start_s = et
+                        piece_tensor = torch.from_numpy(tseg["audio"].astype(np.float32)).float()
+                        with self._inference_lock:
+                            try:
+                                piece_text = self.model.transcribe(
+                                    piece_tensor,
+                                    language=language,
+                                    punctuation=True,
+                                    batch_size=BATCH_SIZE,
+                                    max_new_tokens=512,
+                                    long_form_threshold_s=MAX_AUDIO_CLIP_S,
+                                )
+                            except TypeError:
+                                piece_text = self.model.transcribe(piece_tensor)
 
-                    if text_clean:
+                        text_clean = piece_text.strip() if isinstance(piece_text, str) else ""
+                        cleaned = text_clean.lower().rstrip(".!?,")
+                        if cleaned in HALLUCINATIONS and tseg["duration"] < 2.5:
+                            continue
+                        if not text_clean:
+                            continue
+
                         hq_phrases.append({
                             "session_id": session_id,
-                            "phrase_id": f"p_chunk_{idx}_{int(st * 100)}",
-                            "speaker": "Me",
-                            "start_time": round(st, 2),
-                            "end_time": round(et, 2),
-                            "duration": round(piece_dur, 2),
+                            "phrase_id": f"p_turn_{idx}_{int(tseg['start_time'] * 100)}",
+                            "speaker": tseg["speaker"],
+                            "start_time": tseg["start_time"],
+                            "end_time": tseg["end_time"],
+                            "duration": tseg["duration"],
                             "text": text_clean,
                         })
 
-                    pct_done = int(((idx + 1) / total_chunks) * 100)
-                    if self.on_hq_progress:
-                        self.on_hq_progress({
-                            "session_id": session_id,
-                            "job_id": job_id,
-                            "percent": pct_done,
-                            "chunk": idx + 1,
-                            "total_chunks": total_chunks,
-                        })
+                        pct_done = int(((idx + 1) / total_chunks) * 100)
+                        if self.on_hq_progress:
+                            self.on_hq_progress({
+                                "session_id": session_id,
+                                "job_id": job_id,
+                                "percent": pct_done,
+                                "chunk": idx + 1,
+                                "total_chunks": total_chunks,
+                            })
 
-                full_text = "\n\n".join([t for t in chunk_texts if t])
+                    full_text = "\n\n".join(f"{p['speaker']}: {p['text']}" for p in hq_phrases) if hq_phrases else ""
+                else:
+                    # Single speaker or fallback to energy chunking
+                    pieces = [full_audio_np]
+                    try:
+                        from nano_cohere_transcribe.chunk import split_audio_chunks_energy
+                        pieces = split_audio_chunks_energy(
+                            waveform=full_audio_np,
+                            sample_rate=SAMPLE_RATE,
+                            max_audio_clip_s=MAX_AUDIO_CLIP_S,
+                            overlap_chunk_second=OVERLAP_CHUNK_SECOND,
+                            min_energy_window_samples=1600,
+                        )
+                    except Exception as e:
+                        logger.warning("Could not split audio into energy chunks: %s", e)
+                        pieces = [full_audio_np]
+
+                    total_chunks = max(1, len(pieces))
+                    chunk_texts: List[str] = []
+                    current_start_s = 0.0
+
+                    for idx, piece in enumerate(pieces):
+                        pct = int((idx / total_chunks) * 100)
+                        if self.on_hq_progress:
+                            self.on_hq_progress({
+                                "session_id": session_id,
+                                "job_id": job_id,
+                                "percent": pct,
+                                "chunk": idx + 1,
+                                "total_chunks": total_chunks,
+                            })
+
+                        piece_tensor = torch.from_numpy(piece.astype(np.float32)).float()
+                        with self._inference_lock:
+                            try:
+                                piece_text = self.model.transcribe(
+                                    piece_tensor,
+                                    language=language,
+                                    punctuation=True,
+                                    batch_size=BATCH_SIZE,
+                                    max_new_tokens=512,
+                                    long_form_threshold_s=MAX_AUDIO_CLIP_S,
+                                )
+                            except TypeError:
+                                # Compatibility fallback for FakeModel in unit tests
+                                piece_text = self.model.transcribe(piece_tensor)
+                        
+                        text_clean = piece_text.strip() if isinstance(piece_text, str) else ""
+                        chunk_texts.append(text_clean)
+
+                        piece_dur = len(piece) / SAMPLE_RATE
+                        st = current_start_s
+                        et = current_start_s + piece_dur
+                        current_start_s = et
+
+                        if text_clean:
+                            hq_phrases.append({
+                                "session_id": session_id,
+                                "phrase_id": f"p_chunk_{idx}_{int(st * 100)}",
+                                "speaker": "Speaker 1" if full_turns else "Me",
+                                "start_time": round(st, 2),
+                                "end_time": round(et, 2),
+                                "duration": round(piece_dur, 2),
+                                "text": text_clean,
+                            })
+
+                        pct_done = int(((idx + 1) / total_chunks) * 100)
+                        if self.on_hq_progress:
+                            self.on_hq_progress({
+                                "session_id": session_id,
+                                "job_id": job_id,
+                                "percent": pct_done,
+                                "chunk": idx + 1,
+                                "total_chunks": total_chunks,
+                            })
+
+                    if hq_phrases and full_turns:
+                        try:
+                            self.get_diarizer().assign_speakers_to_phrases(hq_phrases, full_turns, default_speaker="Speaker 1")
+                        except Exception as e:
+                            logger.warning("Audio diarization failed: %s", e)
+
+                    distinct_speakers = set(p["speaker"] for p in hq_phrases if p.get("speaker"))
+                    if len(distinct_speakers) > 1:
+                        full_text = "\n\n".join(f"{p['speaker']}: {p['text']}" for p in hq_phrases)
+                    else:
+                        full_text = "\n\n".join([t for t in chunk_texts if t])
 
             duration_s = len(full_audio_np) / SAMPLE_RATE
             elapsed_s = time.perf_counter() - t_start

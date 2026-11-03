@@ -1,17 +1,25 @@
 import { Phrase } from "./api.ts";
 
 export interface ParsedTranscriptBlock {
-  speaker?: "Me" | "Them";
+  speaker?: string;
   text: string;
   startTime?: number;
 }
 
 /**
- * Normalizes any speaker string to "Me" or "Them".
+ * Normalizes any speaker string. "system" -> "Them", "mic"/"you" -> "Me", custom names preserved.
  */
-export function normalizeSpeakerLabel(speaker?: string): "Me" | "Them" {
-  const s = (speaker || "").trim().toLowerCase();
-  return ["system audio", "system / remote", "system", "remote", "them"].includes(s) ? "Them" : "Me";
+export function normalizeSpeakerLabel(speaker?: string): string {
+  if (!speaker) return "Me";
+  const s = speaker.trim();
+  const lower = s.toLowerCase();
+  if (["system audio", "system / remote", "system", "remote", "them"].includes(lower)) {
+    return "Them";
+  }
+  if (["me", "you", "mic", "user"].includes(lower)) {
+    return "Me";
+  }
+  return s;
 }
 
 /**
@@ -42,7 +50,10 @@ export function parseTimeString(timeStr?: string): number | undefined {
  */
 function isSpeakerPrefix(prefix: string): boolean {
   const p = prefix.trim().toLowerCase();
-  return ["me", "them", "you", "system", "remote", "system audio"].includes(p) || /^speaker\s*\d+$/i.test(p);
+  return (
+    ["me", "them", "you", "system", "remote", "system audio"].includes(p) ||
+    /^speaker\s*\d+$/i.test(p)
+  );
 }
 
 /**
@@ -109,9 +120,7 @@ export function parseTranscriptBlocks(rawText: string): ParsedTranscriptBlock[] 
 }
 
 /**
- * Builds formatted full transcript text from a list of phrases.
- * Preserves speaker labels ("Me:" / "Them:") when multiple speakers exist
- * or when the previous transcript used them.
+ * Builds full transcript string from phrases, preserving speaker prefixes when appropriate.
  */
 export function buildFinalTranscriptFromPhrases(
   phrases: Phrase[],
@@ -119,9 +128,10 @@ export function buildFinalTranscriptFromPhrases(
 ): string {
   if (!phrases || phrases.length === 0) return "";
 
-  const hasMultipleSpeakers = phrases.some((p) => normalizeSpeakerLabel(p.speaker) === "Them");
+  const distinctSpeakers = new Set(phrases.map((p) => normalizeSpeakerLabel(p.speaker)));
+  const hasMultipleSpeakers = distinctSpeakers.size > 1;
   const existingHasPrefixes = existingTranscript
-    ? /^(?:Me|Them|You|System|Remote|System Audio|Speaker\s*\d+):\s*/im.test(existingTranscript)
+    ? /^(?:Me|Them|You|System|Remote|System Audio|Speaker\s*\d+|[A-Za-z0-9_-]+):\s*/im.test(existingTranscript)
     : true;
   const usePrefixes = hasMultipleSpeakers || existingHasPrefixes || !existingTranscript;
 

@@ -121,6 +121,16 @@ A lightweight, reliable, high-performance local meeting transcription desktop ap
 ### Stage 5: Meeting Intelligence, Local Summarization, Hotkeys & Polish
 *Goal: Executive summaries, global shortcuts, standalone packaging, and quality-of-life enhancements.*
 
+- [x] **System Tray, Background Running & Floating Mini Widget**:
+  - System tray icon with toggle recording, double-click to open/unminimize, and clean exit.
+  - Background execution on window close (hidden to tray); full exit via Settings "Quit Sayso" or Tray "Exit Sayso".
+  - Floating draggable mini widget with live VAD meter, recording timer, Open App button, and Stop Recording button.
+- [x] **Speaker Diarization & Custom Speaker Names**:
+  - Offline speaker diarization (Pyannote 3.1 + acoustic clustering fallback).
+  - Customizable user name in Settings re-used across all meetings.
+  - In-place speaker renaming modal in transcript view with auto-updated `.txt` and `.srt` exports.
+- [x] **Meeting History Search**:
+  - Instant client-side filtering across titles, full transcripts, individual phrases, and speaker names with search match highlighting.
 - [ ] **Local Meeting Summarization**:
   - Optional integration with local LLMs (e.g. Ollama or llama.cpp) to generate:
     - Executive Summary
@@ -128,7 +138,6 @@ A lightweight, reliable, high-performance local meeting transcription desktop ap
     - Key Discussion Points
 - [ ] **Global Hotkeys**:
   - System-wide hotkeys (e.g. `Ctrl+Alt+R` to toggle recording, `Ctrl+Alt+M` for mute/push-to-talk).
-  - Floating mini-widget / system tray icon when recording.
 - [ ] **Audio Pre-processing**:
   - Optional noise suppression and automatic gain control (AGC) on mic input.
   - Acoustic echo suppression between system loopback and mic.

@@ -42,6 +42,22 @@ start-web.bat
 
 ---
 
+## Building
+
+To build the native desktop release binary and bundles:
+
+```cmd
+build.bat
+```
+
+Options:
+- `build.bat`: Standard production build via Tauri (`npm run tauri build`)
+- `build.bat --no-bundle`: Compile release executable without packaging installer bundles
+- `build.bat --frontend`: Build Vite/TypeScript frontend static assets only (`dist/`)
+- `build.bat --portable`: Build a self-contained portable Windows distribution (invokes `package-portable.ps1`)
+
+---
+
 ## Running Tests
 
 Execute `test.bat`:

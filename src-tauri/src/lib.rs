@@ -199,8 +199,55 @@ fn ensure_backend_running() {
     }
 }
 
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager};
+
+struct TrayState {
+    record_item: MenuItem<tauri::Wry>,
+}
+
+static IS_RECORDING: AtomicBool = AtomicBool::new(false);
+
+fn update_mini_window_visibility(app: &tauri::AppHandle) {
+    let recording = IS_RECORDING.load(Ordering::SeqCst);
+    let main_visible = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+
+    if let Some(mini) = app.get_webview_window("mini") {
+        if recording && !main_visible {
+            let _ = mini.show();
+            let _ = mini.unminimize();
+            let _ = mini.set_always_on_top(true);
+        } else {
+            let _ = mini.hide();
+        }
+    }
+}
+
+#[tauri::command]
+fn update_tray_recording_state(
+    app: tauri::AppHandle,
+    state: tauri::State<TrayState>,
+    is_recording: bool,
+) -> Result<(), String> {
+    IS_RECORDING.store(is_recording, Ordering::SeqCst);
+    let text = if is_recording { "Stop recording" } else { "Start recording" };
+    let res = state.record_item.set_text(text).map_err(|e| e.to_string());
+    update_mini_window_visibility(&app);
+    res
+}
+
+#[tauri::command]
+fn sync_window_visibility(app: tauri::AppHandle) {
+    update_mini_window_visibility(&app);
+}
+
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    cleanup_processes();
     app.exit(0);
 }
 
@@ -221,8 +268,42 @@ fn toggle_maximize_window(window: tauri::Window) {
 }
 
 #[tauri::command]
-fn close_window(app: tauri::AppHandle) {
-    app.exit(0);
+fn close_window(app: tauri::AppHandle, window: tauri::Window) {
+    // Hide to tray instead of quitting
+    let _ = window.hide();
+    update_mini_window_visibility(&app);
+}
+
+#[tauri::command]
+fn hide_window(app: tauri::AppHandle, window: tauri::Window) {
+    let _ = window.hide();
+    update_mini_window_visibility(&app);
+}
+
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    update_mini_window_visibility(&app);
+}
+
+#[tauri::command]
+fn show_mini_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("mini") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_always_on_top(true);
+    }
+}
+
+#[tauri::command]
+fn hide_mini_window(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("mini") {
+        let _ = window.hide();
+    }
 }
 
 #[tauri::command]
@@ -236,12 +317,73 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let open_i = MenuItem::with_id(app, "open", "Open Sayso", true, None::<&str>)?;
+            let record_i = MenuItem::with_id(app, "toggle_record", "Start recording", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Exit Sayso", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open_i, &record_i, &quit_i])?;
+
+            app.manage(TrayState {
+                record_item: record_i.clone(),
+            });
+
+            let mut tray_builder = TrayIconBuilder::new()
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "open" => {
+                            show_main_window(app.clone());
+                        }
+                        "toggle_record" => {
+                            let _ = app.emit("tray_toggle_record", ());
+                        }
+                        "quit" => {
+                            cleanup_processes();
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } = event {
+                        show_main_window(tray.app_handle().clone());
+                    }
+                });
+
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+
+            let _tray = tray_builder.build(app)?;
+
+            // Prevent window close from terminating app: hide window instead
+            if let Some(window) = app.get_webview_window("main") {
+                let win_clone = window.clone();
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = win_clone.hide();
+                        update_mini_window_visibility(&app_handle);
+                    }
+                });
+            }
+
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             quit_app,
             minimize_window,
             toggle_maximize_window,
             close_window,
-            is_window_maximized
+            hide_window,
+            show_main_window,
+            show_mini_window,
+            hide_mini_window,
+            is_window_maximized,
+            update_tray_recording_state,
+            sync_window_visibility
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

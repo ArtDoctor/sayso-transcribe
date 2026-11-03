@@ -28,8 +28,15 @@ def format_srt_time(seconds: float) -> str:
 
 
 def normalize_speaker(spk: Optional[str]) -> str:
-    s = (spk or "").strip().lower()
-    return "Them" if s in ("them", "system", "remote", "system audio", "system / remote") else "Me"
+    if not spk:
+        return "Me"
+    s = str(spk).strip()
+    s_lower = s.lower()
+    if s_lower in ("them", "system", "remote", "system audio", "system / remote"):
+        return "Them"
+    if s_lower in ("you", "me"):
+        return "Me"
+    return s
 
 
 class StorageManager:
@@ -228,6 +235,42 @@ class StorageManager:
                 meta["final_transcript"] = "\n\n".join(lines)
             if "final_transcript" in updates or "phrases" in updates:
                 meta["transcript_revision"] = meta.get("transcript_revision", 0) + 1
+            self._save_and_export(session_id, meta)
+            return meta
+
+    def rename_speaker(self, session_id: str, old_name: str, new_name: str) -> Optional[Dict[str, Any]]:
+        """Rename all occurrences of old_name to new_name across phrases and final transcript."""
+        with self._lock_for(session_id):
+            meta = self._read_metadata(session_id)
+            if not meta:
+                return None
+            old_name = old_name.strip()
+            new_name = new_name.strip()
+            if not old_name or not new_name or old_name == new_name:
+                return meta
+
+            # Update phrases
+            phrases = meta.get("phrases", [])
+            for p in phrases:
+                if p.get("speaker") == old_name:
+                    p["speaker"] = new_name
+            meta["phrases"] = phrases
+
+            # Update final_transcript
+            final_tx = meta.get("final_transcript", "")
+            if final_tx:
+                pattern = rf"(^|\n){re.escape(old_name)}:"
+                replacement = rf"\1{new_name}:"
+                meta["final_transcript"] = re.sub(pattern, replacement, final_tx)
+            else:
+                lines = [
+                    f"{normalize_speaker(p.get('speaker', 'Me'))}: {p.get('text', '')}"
+                    for p in phrases
+                    if p.get("text")
+                ]
+                meta["final_transcript"] = "\n\n".join(lines)
+
+            meta["transcript_revision"] = meta.get("transcript_revision", 0) + 1
             self._save_and_export(session_id, meta)
             return meta
 

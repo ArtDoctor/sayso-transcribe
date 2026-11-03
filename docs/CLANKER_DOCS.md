@@ -29,6 +29,7 @@ sayso/ (transcriber)
 │   ├── TODO.md            # Multi-stage product roadmap (Stages 1 - 5)
 │   ├── CLANKER_DOCS.md    # Architecture and AI developer guide
 │   └── CLANKER_STT.md     # Cohere vs Whisper benchmark results
+├── build.bat              # One-click production desktop & portable build script
 ├── start.bat              # One-click desktop app launcher
 ├── start-web.bat          # Web browser dev server launcher
 └── test.bat               # Runs backend & frontend test suites
@@ -64,7 +65,9 @@ sayso/ (transcriber)
     - `system.wav`: isolated system / loopback stream (`Them`).
   - High-quality 2nd-pass transcription reads `system.wav` for `Them` phrases and `mic.wav` for `Me` phrases, eliminating crosstalk and user speech bleed into the other speaker's transcription.
   - The recording detail view features a **Folder** button (`#btn-open-folder`) calling `POST /api/recordings/{session_id}/open_folder`, which opens the session's folder directly in File Explorer.
-- **Asynchronous Loading**: `ensure_model_loading()` spawns a daemon loader thread (`_load_model_worker`). `status` progresses: `not_downloaded` -> `loading` -> `ready`.
+- **Asynchronous Loading & Model Download**:
+  - `ensure_model_loading()` spawns a daemon loader thread (`_load_model_worker`). `status` progresses: `not_downloaded` -> `loading` -> `ready`.
+  - When downloading model files in `_download_worker`, `try_to_load_from_cache(COHERE_MODEL_ID, fname)` checks local cache (without `token`, as `try_to_load_from_cache` is strictly a local disk lookup). Remote download uses `hf_hub_download(..., token=hf_token)` which correctly passes authentication tokens from `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`.
 - **Chunked High-Quality Pass & WebSocket Progress**:
   - `split_audio_chunks_energy()` divides captured session audio into energy-bounded speech chunks.
   - `run_high_quality_pass()` reports progress via `on_hq_progress(processed, total, session_id)` callback.
@@ -151,6 +154,63 @@ sayso/ (transcriber)
   should be stopped with Ctrl+C; the desktop launcher is the supported path when
   shutdown cleanup is required.
 
+## Speaker Diarization, Multi-Speaker Phrase Separation & Custom Speaker Names
+
+- **Offline Diarization Engine (`backend/diarization.py`)**:
+  - Automatically activates for single-file uploads, multi-speaker loopback captures, and 2nd-pass post-meeting processing.
+  - Leverages locally cached Pyannote 3.1 (`models--pyannote--speaker-diarization-3.1` and `wespeaker-voxceleb-resnet34-LM` in `~/.cache/huggingface/hub`).
+  - Passes in-memory waveform tensors (`{"waveform": tensor, "sample_rate": 16000}`) to avoid `torchcodec` dependency issues on Windows.
+  - Falls back to heuristic acoustic feature clustering when Pyannote weights are not present.
+  - Automatically merges contiguous turns of the same speaker separated by short pauses (`_merge_contiguous_turns`) and maps them to clean identifiers (`Speaker 1`, `Speaker 2`, etc.).
+- **Multi-Speaker Separation within VAD Phrases (`split_phrases_by_speaker_turns`)**:
+  - Silero VAD detects speech onset and pause boundaries (silence pauses), which can encompass multiple speakers talking back-to-back in the same audio track without an 0.85s pause.
+  - `SpeakerDiarizer.split_phrases_by_speaker_turns` checks if an incoming VAD phrase contains multiple distinct speaker turns. If so, it splits the phrase at the speaker transition boundary into distinct sub-phrases (`phrase_id`, `phrase_id_s1`, etc.).
+  - `run_high_quality_pass` slices the audio corresponding to each speaker's sub-interval and transcribes each separately, ensuring speaker attribution is clean and no text from different speakers is fused into a single phrase.
+  - In continuous audio / file uploads, `SpeakerDiarizer.segment_audio_by_turns` segments the audio directly using diarization turn boundaries (merging only contiguous turns of the same speaker up to 25s), completely preventing cross-speaker chunking.
+  - Live phrases on CUDA are also checked via `_transcribe_phrase_item`, emitting separate `phrase_transcribed` events for each detected speaker sub-segment.
+- **App Simulation Evaluation Framework (`eval_dataset/evaluate_app_simulation.py`)**:
+  - Simulates end-to-end transcriber behavior on evaluation datasets:
+    - Mode `vad_stream`: Streams 512-sample frames through `PhraseSegmenter` (Silero VAD) to produce realistic live phrases, then executes `run_high_quality_pass`.
+    - Mode `upload`: Directly processes audio files through `run_high_quality_pass` turn-based segmentation.
+  - Computes Hungarian 1:1 speaker alignment, Global WER, Speaker-Attributed WER, CER, RTF, and detects speaker fusion errors where a single phrase spans across distinct ground-truth speaker turns.
+  - Generates JSON and Markdown reports in `eval_dataset/benchmark_outputs/`.
+- **User Name & Speaker Customization**:
+  - User can configure their personal name in Settings (`#input-user-name`), persisted in `localStorage["sayso.settings"]`.
+  - When starting a recording, `user_name` is transmitted to `POST /api/record/start` and stored on the session. Single-speaker tracks and microphone audio are labeled with the user's name rather than generic "Me".
+  - If a recording has only 1 speaker, full text is formatted as natural paragraphs without repetitive "Speaker 1:" prefixes.
+- **In-Place Speaker Renaming (`POST /api/recordings/{session_id}/rename_speaker`)**:
+  - In the history transcript view, every phrase row features a speaker tag with an edit button (`.speaker-rename-btn`).
+  - Clicking opens `#rename-speaker-modal` to rename that speaker across the entire meeting.
+  - `StorageManager.rename_speaker` updates all in-memory and persisted phrases, adjusts `final_transcript` speaker prefixes with regex, increments `transcript_revision`, and updates exported `.txt` and `.srt` files.
+
+## History Search
+
+- Dedicated search bar in the History sidebar (`#history-search-input`, `#btn-clear-search`).
+- Filters recordings in real-time across meeting titles, full transcript text, individual phrase texts, and speaker names.
+- Renders matching substring highlights (`.search-match-highlight`) in meeting titles.
+- Pressing Escape or clicking ✕ clears the search query and restores the full list.
+
+## System Tray, Background Running & Floating Mini Widget
+
+- **Tauri System Tray (`src-tauri/src/lib.rs`)**:
+  - Configured with `TrayIconBuilder` and context menu: "Open Sayso", dynamic record item ("Start recording" / "Stop recording"), and "Exit Sayso".
+  - Managed state `TrayState` updates the menu item text in real time via `update_tray_recording_state(is_recording)`.
+  - Double-clicking the tray icon restores, unminimizes, and focuses the main window.
+  - Clicking the recording tray button emits `tray_toggle_record` to the frontend, handled exclusively by the main window to toggle capture and show the floating mini widget.
+- **Background Running Behavior**:
+  - Closing the main window (`CloseRequested`) intercepts window closing, runs `api.prevent_close()`, and hides the window to the tray. The app and background recording continue uninterrupted.
+  - To fully terminate the application, the user clicks "Quit Sayso" (`#btn-quit-app` in Settings) or "Exit Sayso" in the system tray menu.
+  - `quit_app` calls `cleanup_processes()`, forcefully terminating child Python processes and freeing port `48653`.
+- **Floating Mini Widget (`?view=mini`)**:
+  - Configured as a secondary lightweight window (`tauri.conf.json`) with `width: 150`, `height: 54`, `transparent: true`, `decorations: false`, and `alwaysOnTop: true`.
+  - **Visibility Rule**: Only shown if recording is active AND the main window is closed/hidden to the tray (`recording && !main_visible`). When the main application is open, the floating widget is automatically hidden.
+  - Seamless mouse dragging supported via both CSS `-webkit-app-region: drag` and native `getCurrentWindow().startDragging()` on primary `mousedown`. Action buttons are excluded via `-webkit-app-region: no-drag`.
+  - Displays:
+    - Dynamic 3-bar audio activity visualizer (`#mini-vad-meter`) matching the main app's `.vad-bar` animation (flex-end alignment, `0.12s cubic-bezier(0.2, 0.8, 0.2, 1)` transition, and `.speaking` glow), combining mic and loopback RMS into a single unified meter.
+    - "Open App" button (`#btn-mini-open-app`) to focus and unminimize the main window while hiding the mini widget.
+    - "Stop Recording" button (`#btn-mini-stop-rec`).
+  - Stopping through the floating widget emits `request_stop_recording`, closes the mini widget, opens the main window directly on the newly finished recording in the History view (`#tab-history`), displays the high-quality re-transcription progress modal (`#hq-progress-modal`), and updates in place with the finalized transcript and audio player once complete.
+
 ## Validation Commands
 
 ```powershell
@@ -158,6 +218,7 @@ npm test
 python -m pytest -q
 npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
+cmd /c build.bat --no-bundle
 ```
 
 ## Portable Windows Packaging

@@ -263,6 +263,33 @@ def test_lock_free_model_cache_check():
     assert isinstance(engine.is_model_downloaded(), bool)
 
 
+def test_model_download_worker_handles_cache_and_token(monkeypatch):
+    """Verify _download_worker invokes hf_hub_download without try_to_load_from_cache token TypeError."""
+    from backend.stt_engine import STTEngine
+    import huggingface_hub
+
+    engine = STTEngine(auto_load=False)
+    downloaded_files = []
+
+    def fake_hf_hub_download(repo_id, filename, tqdm_class=None, token=None):
+        downloaded_files.append((filename, token))
+        return f"/fake/path/{filename}"
+
+    monkeypatch.setenv("HF_TOKEN", "hf_test_token_123")
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf_hub_download)
+    monkeypatch.setattr(engine, "_load_model_worker", lambda: None)
+
+    try:
+        engine._download_worker()
+        assert len(downloaded_files) == len(engine.REQUIRED_FILES)
+        for _, tok in downloaded_files:
+            assert tok == "hf_test_token_123"
+        assert engine.status in ("loading", "ready")
+    finally:
+        engine.shutdown()
+
+
 def test_recorder_default_devices(monkeypatch):
     """Verify default device handling without touching real audio hardware."""
     import backend.recorder as recorder_module
@@ -717,6 +744,119 @@ def test_real_ffmpeg_conversion_if_installed():
         assert converted_sr == 16000
         assert converted_data.ndim == 1  # mono!
         assert len(converted_data) == int(16000 * duration)
+
+
+def test_rename_speaker_endpoint():
+    """Verify renaming a speaker updates all phrase rows and the final transcript."""
+    client = TestClient(app)
+    from backend.main import storage
+
+    sid = "sess_rename_speaker_test"
+    try:
+        storage.create_session(sid, title="Rename Test")
+        storage.update_session(sid, {
+            "phrases": [
+                {"phrase_id": "p1", "speaker": "Speaker 1", "start_time": 0.0, "end_time": 1.5, "text": "Hello there."},
+                {"phrase_id": "p2", "speaker": "Speaker 2", "start_time": 2.0, "end_time": 3.5, "text": "Hi Alex."},
+                {"phrase_id": "p3", "speaker": "Speaker 1", "start_time": 4.0, "end_time": 5.0, "text": "How is it going?"},
+            ],
+            "final_transcript": "Speaker 1: Hello there.\n\nSpeaker 2: Hi Alex.\n\nSpeaker 1: How is it going?",
+        })
+
+        res = client.post(f"/api/recordings/{sid}/rename_speaker", json={"old_name": "Speaker 1", "new_name": "Sarah"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["phrases"][0]["speaker"] == "Sarah"
+        assert data["phrases"][1]["speaker"] == "Speaker 2"
+        assert data["phrases"][2]["speaker"] == "Sarah"
+        assert "Sarah: Hello there." in data["final_transcript"]
+        assert "Speaker 1" not in data["final_transcript"]
+
+        # Verify disk persistence
+        sess = storage.get_session(sid)
+        assert sess["phrases"][0]["speaker"] == "Sarah"
+        assert "Sarah: Hello there." in sess["final_transcript"]
+    finally:
+        storage.delete_session(sid)
+
+
+def test_diarizer_speaker_assignment():
+    """Verify SpeakerDiarizer assigns turns to phrases based on temporal overlap."""
+    from backend.diarization import SpeakerDiarizer
+    diarizer = SpeakerDiarizer(device="cpu")
+
+    phrases = [
+        {"phrase_id": "p1", "start_time": 0.5, "end_time": 2.0, "speaker": "Them", "text": "First turn."},
+        {"phrase_id": "p2", "start_time": 3.0, "end_time": 6.0, "speaker": "Them", "text": "Second turn."},
+    ]
+    turns = [
+        {"start": 0.0, "end": 2.5, "speaker": "Speaker 1"},
+        {"start": 2.8, "end": 7.0, "speaker": "Speaker 2"},
+    ]
+    assigned = diarizer.assign_speakers_to_phrases(phrases, turns)
+    assert assigned[0]["speaker"] == "Speaker 1"
+    assert assigned[1]["speaker"] == "Speaker 2"
+
+
+def test_diarizer_split_phrase_multiple_speakers():
+    """Verify SpeakerDiarizer splits a single VAD phrase containing two speakers into two distinct phrases."""
+    from backend.diarization import SpeakerDiarizer
+    diarizer = SpeakerDiarizer(device="cpu")
+
+    # A single continuous 6.0s VAD phrase
+    phrases = [
+        {
+            "phrase_id": "p_single_vad",
+            "start_time": 0.0,
+            "end_time": 6.0,
+            "speaker": "Them",
+            "text": "Hello there how are you doing fine thanks",
+        }
+    ]
+    # Diarization reveals Speaker 1 spoke 0-2.8s and Speaker 2 spoke 3.0-6.0s
+    turns = [
+        {"start": 0.0, "end": 2.8, "speaker": "Speaker 1"},
+        {"start": 3.0, "end": 6.0, "speaker": "Speaker 2"},
+    ]
+
+    split_phrases = diarizer.split_phrases_by_speaker_turns(phrases, turns)
+    assert len(split_phrases) == 2, f"Expected phrase to be split into 2, got {len(split_phrases)}"
+    assert split_phrases[0]["speaker"] == "Speaker 1"
+    assert split_phrases[0]["start_time"] == 0.0
+    assert 2.7 <= split_phrases[0]["end_time"] <= 3.0
+    assert split_phrases[1]["speaker"] == "Speaker 2"
+    assert 2.7 <= split_phrases[1]["start_time"] <= 3.0
+    assert split_phrases[1]["end_time"] == 6.0
+
+
+def test_diarizer_segment_audio_by_turns():
+    """Verify segment_audio_by_turns merges same speaker turns and never merges different speakers."""
+    from backend.diarization import SpeakerDiarizer
+    diarizer = SpeakerDiarizer(device="cpu")
+
+    sr = 16000
+    dummy_audio = np.ones(sr * 12, dtype=np.float32) * 0.1
+    turns = [
+        {"start": 0.0, "end": 3.0, "speaker": "Speaker 1"},
+        {"start": 3.2, "end": 6.0, "speaker": "Speaker 2"},
+        {"start": 6.5, "end": 8.0, "speaker": "Speaker 2"},  # Should merge with preceding Speaker 2
+        {"start": 8.5, "end": 11.0, "speaker": "Speaker 1"},  # New turn for Speaker 1
+    ]
+
+    segments = diarizer.segment_audio_by_turns(dummy_audio, sr, turns, max_chunk_s=25.0)
+    assert len(segments) == 3, f"Expected 3 segments, got {len(segments)}"
+    assert segments[0]["speaker"] == "Speaker 1"
+    assert segments[0]["start_time"] == 0.0
+    assert segments[0]["end_time"] == 3.0
+
+    assert segments[1]["speaker"] == "Speaker 2"
+    assert segments[1]["start_time"] == 3.2
+    assert segments[1]["end_time"] == 8.0  # Merged contiguous turns of Speaker 2
+
+    assert segments[2]["speaker"] == "Speaker 1"
+    assert segments[2]["start_time"] == 8.5
+    assert segments[2]["end_time"] == 11.0
+
 
 
 

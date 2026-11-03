@@ -292,6 +292,7 @@ class StartRecordRequest(BaseModel):
     mode: Literal["mic_only", "mic_and_system"] = "mic_only"
     language: str = DEFAULT_LANGUAGE
     title: Optional[str] = None
+    user_name: Optional[str] = "Me"
     mic_device_index: Optional[int] = None
     system_device_index: Optional[int] = None
     mic_device_name: Optional[str] = None
@@ -300,6 +301,10 @@ class StartRecordRequest(BaseModel):
 
 class ChangeLanguageRequest(BaseModel):
     language: str
+
+class RenameSpeakerRequest(BaseModel):
+    old_name: str
+    new_name: str
 
 class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
@@ -393,7 +398,10 @@ def start_recording(req: StartRecordRequest):
         session_id = f"sess_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
         current_recording_params["language"] = req.language
         current_recording_params["mode"] = req.mode
+        current_recording_params["user_name"] = (req.user_name or "Me").strip()
         meta = storage.create_session(session_id=session_id, mode=req.mode, language=req.language, title=req.title)
+        if current_recording_params["user_name"] != "Me":
+            storage.update_session(session_id, {"user_name": current_recording_params["user_name"]})
         success = recorder.start(
             session_id=session_id,
             mode=req.mode,
@@ -480,6 +488,7 @@ def stop_recording():
             existing_phrases,
             audio_mic,
             audio_sys,
+            current_recording_params.get("user_name", "Me"),
         )
         if ws_manager._loop and ws_manager._loop.is_running():
             ws_manager._loop.run_in_executor(None, stt_engine.run_high_quality_pass, *args)
@@ -571,6 +580,23 @@ def update_recording(session_id: str, req: UpdateSessionRequest):
     return sess
 
 
+@app.post("/api/recordings/{session_id}/rename_speaker")
+def rename_recording_speaker(session_id: str, req: RenameSpeakerRequest):
+    _validate_session_id(session_id)
+    old_name = req.old_name.strip()
+    new_name = req.new_name.strip()
+    if not old_name or not new_name:
+        raise HTTPException(status_code=400, detail="old_name and new_name must be non-empty")
+    sess = storage.rename_speaker(session_id, old_name, new_name)
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+    ws_manager.broadcast_sync({
+        "type": "session_updated",
+        "session": sess,
+    })
+    return sess
+
+
 @app.delete("/api/recordings/{session_id}")
 def delete_recording(session_id: str):
     _validate_session_id(session_id)
@@ -615,7 +641,8 @@ def retranscribe_recording(session_id: str):
         raise HTTPException(status_code=409, detail="Transcription is already in progress")
     storage.mark_hq_processing(session_id, job_id)
     existing_phrases = sess.get("phrases")
-    args = (session_id, audio_np, lang, job_id, existing_phrases, audio_mic, audio_sys)
+    user_name = sess.get("user_name", "Me")
+    args = (session_id, audio_np, lang, job_id, existing_phrases, audio_mic, audio_sys, user_name)
     if ws_manager._loop and ws_manager._loop.is_running():
         ws_manager._loop.run_in_executor(None, stt_engine.run_high_quality_pass, *args)
     else:
@@ -710,7 +737,7 @@ async def upload_and_transcribe(
             "session": meta,
         })
 
-        args = (session_id, audio_np, lang, job_id, None, None, None)
+        args = (session_id, audio_np, lang, job_id, None, None, None, None)
         if ws_manager._loop and ws_manager._loop.is_running():
             ws_manager._loop.run_in_executor(None, stt_engine.run_high_quality_pass, *args)
         else:

@@ -27,6 +27,13 @@ describe("transcript-sync", () => {
       expect(normalizeSpeakerLabel("")).toBe("Me");
       expect(normalizeSpeakerLabel(undefined)).toBe("Me");
     });
+
+    it("preserves custom speaker names and Speaker N", () => {
+      expect(normalizeSpeakerLabel("Speaker 1")).toBe("Speaker 1");
+      expect(normalizeSpeakerLabel("Speaker 2")).toBe("Speaker 2");
+      expect(normalizeSpeakerLabel("Sarah")).toBe("Sarah");
+      expect(normalizeSpeakerLabel("Dr. Andrew")).toBe("Dr. Andrew");
+    });
   });
 
   describe("parseTimeString", () => {

@@ -5,6 +5,13 @@ import {
   reconcilePhrases,
 } from "./transcript-sync.ts";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, emit } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+const isMiniMode = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("view") === "mini";
+if (isMiniMode) {
+  document.body.classList.add("mini-window-mode");
+}
 
 // Window & Titlebar Controls
 const appTitlebar = document.getElementById("app-titlebar") as HTMLElement | null;
@@ -92,6 +99,8 @@ const emptyPhrasesHint = document.getElementById("empty-phrases-hint") as HTMLEl
 
 // History Elements
 const btnRefreshHistory = document.getElementById("btn-refresh-history") as HTMLButtonElement;
+const historySearchInput = document.getElementById("history-search-input") as HTMLInputElement | null;
+const btnClearSearch = document.getElementById("btn-clear-search") as HTMLButtonElement | null;
 const sessionsList = document.getElementById("sessions-list") as HTMLElement;
 const emptyDetailHint = document.getElementById("empty-detail-hint") as HTMLElement;
 const sessionLoadingState = document.getElementById("session-loading-state") as HTMLElement;
@@ -123,6 +132,26 @@ const hqModalProgressBar = document.getElementById("hq-modal-progress-bar") as H
 const hqModalPct = document.getElementById("hq-modal-pct") as HTMLElement;
 const hqModalChunks = document.getElementById("hq-modal-chunks") as HTMLElement;
 
+// Rename Speaker Modal Elements
+const renameSpeakerModal = document.getElementById("rename-speaker-modal") as HTMLElement | null;
+const renameSpeakerTitle = document.getElementById("rename-speaker-title") as HTMLElement | null;
+const renameSpeakerDesc = document.getElementById("rename-speaker-desc") as HTMLElement | null;
+const inputSpeakerNewName = document.getElementById("input-speaker-new-name") as HTMLInputElement | null;
+const btnCloseRenameSpeaker = document.getElementById("btn-close-rename-speaker") as HTMLButtonElement | null;
+const btnCancelRenameSpeaker = document.getElementById("btn-cancel-rename-speaker") as HTMLButtonElement | null;
+const btnConfirmRenameSpeaker = document.getElementById("btn-confirm-rename-speaker") as HTMLButtonElement | null;
+
+// Mini Floating Widget Elements
+const miniFloatingWidget = document.getElementById("mini-floating-widget") as HTMLElement | null;
+const miniTimer = document.getElementById("mini-timer") as HTMLElement | null;
+const miniVadBars = [
+  document.getElementById("mini-vad-1"),
+  document.getElementById("mini-vad-2"),
+  document.getElementById("mini-vad-3"),
+].filter(Boolean) as HTMLElement[];
+const btnMiniOpenApp = document.getElementById("btn-mini-open-app") as HTMLButtonElement | null;
+const btnMiniStopRec = document.getElementById("btn-mini-stop-rec") as HTMLButtonElement | null;
+
 // Audio Player Elements
 const audioElement = document.getElementById("session-audio-element") as HTMLAudioElement;
 const btnPlayerPlay = document.getElementById("btn-player-play") as HTMLButtonElement;
@@ -139,12 +168,18 @@ const btnCloseSettings = document.getElementById("btn-close-settings") as HTMLBu
 const btnSaveSettings = document.getElementById("btn-save-settings") as HTMLButtonElement;
 const btnRefreshDevices = document.getElementById("btn-refresh-devices") as HTMLButtonElement;
 const btnPreloadModel = document.getElementById("btn-preload-model") as HTMLButtonElement;
+const inputUserName = document.getElementById("input-user-name") as HTMLInputElement | null;
+const btnQuitApp = document.getElementById("btn-quit-app") as HTMLButtonElement | null;
 const selectMicDevice = document.getElementById("select-mic-device") as HTMLSelectElement;
 const selectSystemDevice = document.getElementById("select-system-device") as HTMLSelectElement;
 const selectLanguage = document.getElementById("select-language") as HTMLSelectElement;
 const settingsModelStatusText = document.getElementById("settings-model-status-text") as HTMLElement;
 
 // State Variables
+let currentUserName: string = "Me";
+let targetRenameSpeaker: string | null = null;
+let allRecordings: RecordingSession[] = [];
+let historySearchQuery: string = "";
 let selectedMicName: string = "";
 let selectedSystemName: string = "";
 let selectedMicIndex: number = -1; // -1 means Windows Default
@@ -270,6 +305,9 @@ async function initApp() {
   setupAudioPlayer();
   setupHistoryActions();
   setupModelDownloadAction();
+  setupRenameSpeakerModal();
+  setupMiniWidget();
+  setupTrayListener();
 
   let initialProbeTimer: number | null = null;
   const stopInitialProbe = () => {
@@ -404,6 +442,13 @@ function updateVadBars(bars: HTMLElement[], rms: number, isSpeaking: boolean) {
   }
 }
 
+function updateMiniVad(micRms: number, isMicSpeaking: boolean, sysRms: number, isSysSpeaking: boolean) {
+  if (!miniVadBars.length) return;
+  const isSpeaking = isMicSpeaking || isSysSpeaking;
+  const combinedRms = Math.max(micRms, sysRms);
+  updateVadBars(miniVadBars, combinedRms, isSpeaking);
+}
+
 function handleVadMeter(payload: any) {
   const micRms = Math.min(1, Math.max(0, payload.mic?.rms || 0));
   const systemRms = Math.min(1, Math.max(0, payload.system?.rms || 0));
@@ -416,19 +461,28 @@ function handleVadMeter(payload: any) {
   updateVadBars([systemVadBar1, systemVadBar2, systemVadBar3], systemRms, isSystemSpeaking);
   if (labelSystem) labelSystem.classList.toggle("speaking", isSystemSpeaking);
 
-  manageSpeakingSkeleton("Me", isMicSpeaking);
+  updateMiniVad(micRms, isMicSpeaking, systemRms, isSystemSpeaking);
+
+  manageSpeakingSkeleton(currentUserName || "Me", isMicSpeaking);
   manageSpeakingSkeleton("Them", isSystemSpeaking);
 }
 
-function manageSpeakingSkeleton(speaker: "Me" | "Them", isSpeaking: boolean) {
-  if (speaker === "Me") {
+function isUserSpeaker(speaker: string): boolean {
+  const s = (speaker || "").trim();
+  const myName = (currentUserName || "Me").trim();
+  return s === "Me" || s === myName || s.toLowerCase() === "mic" || s.toLowerCase() === "user";
+}
+
+function manageSpeakingSkeleton(speaker: string, isSpeaking: boolean) {
+  const isUser = isUserSpeaker(speaker);
+  if (isUser) {
     if (isSpeaking) {
       if (speakingCardTimerMe) {
         window.clearTimeout(speakingCardTimerMe);
         speakingCardTimerMe = null;
       }
       if (!activeSpeakingCardMe) {
-        activeSpeakingCardMe = createSpeakingSkeletonCard("Me");
+        activeSpeakingCardMe = createSpeakingSkeletonCard(speaker);
         emptyPhrasesHint.classList.add("hidden");
         livePhrasesList.prepend(activeSpeakingCardMe);
         scrollLivePhrasesToTop();
@@ -472,14 +526,14 @@ function manageSpeakingSkeleton(speaker: "Me" | "Them", isSpeaking: boolean) {
   }
 }
 
-function createSpeakingSkeletonCard(speaker: "Me" | "Them"): HTMLElement {
+function createSpeakingSkeletonCard(speaker: string): HTMLElement {
   const card = document.createElement("div");
   card.className = "phrase-card phrase-card-skeleton live-speaking-skeleton";
   card.dataset.speaker = speaker;
   card.setAttribute("aria-busy", "true");
   card.setAttribute("aria-label", `${speaker} speech detected`);
   card.innerHTML = `
-    <span class="phrase-speaker">${speaker}:</span>
+    <span class="phrase-speaker">${escapeHtml(speaker)}:</span>
     <span class="phrase-skeleton-text" aria-hidden="true">
       <span class="phrase-skeleton-line" style="width: 78%"></span>
       <span class="phrase-skeleton-line" style="width: 48%"></span>
@@ -489,8 +543,16 @@ function createSpeakingSkeletonCard(speaker: "Me" | "Them"): HTMLElement {
 }
 
 function speakerLabelForPhrase(phrase: Phrase): string {
-  const speaker = (phrase.speaker || "").trim().toLowerCase();
-  return ["system audio", "system / remote", "system", "remote", "them"].includes(speaker) ? "Them" : "Me";
+  const raw = (phrase.speaker || "").trim();
+  if (!raw) return currentUserName || "Me";
+  const lower = raw.toLowerCase();
+  if (["system audio", "system / remote", "system", "remote", "them"].includes(lower)) {
+    return "Them";
+  }
+  if (["mic", "me", "user"].includes(lower)) {
+    return currentUserName || "Me";
+  }
+  return raw;
 }
 
 function scrollLivePhrasesToTop() {
@@ -529,7 +591,7 @@ function handlePhrasePending(phrase: Phrase) {
   const speaker = speakerLabelForPhrase(phrase);
   let phraseCard: HTMLElement;
 
-  if (speaker === "Me" && activeSpeakingCardMe) {
+  if (isUserSpeaker(speaker) && activeSpeakingCardMe) {
     phraseCard = activeSpeakingCardMe;
     activeSpeakingCardMe = null;
     if (speakingCardTimerMe) {
@@ -622,7 +684,7 @@ function handlePhraseTranscribed(phrase: Phrase) {
       livePhraseCards.delete(phrase.phrase_id);
     }
     const spk = speakerLabelForPhrase(phrase);
-    if (spk === "Me" && activeSpeakingCardMe) {
+    if (isUserSpeaker(spk) && activeSpeakingCardMe) {
       activeSpeakingCardMe.remove();
       activeSpeakingCardMe = null;
       if (speakingCardTimerMe) {
@@ -662,7 +724,7 @@ function handlePhraseTranscribed(phrase: Phrase) {
   let phraseCard = livePhraseCards.get(phrase.phrase_id);
 
   if (!phraseCard) {
-    if (speaker === "Me" && activeSpeakingCardMe) {
+    if (isUserSpeaker(speaker) && activeSpeakingCardMe) {
       phraseCard = activeSpeakingCardMe;
       activeSpeakingCardMe = null;
       if (speakingCardTimerMe) {
@@ -1085,6 +1147,9 @@ async function refreshStatus() {
       leaveRecording();
     }
     if (status.recording_error) showRecordingError(status.recording_error);
+    if (isTauriEnvironment()) {
+      invoke("update_tray_recording_state", { isRecording: Boolean(status.is_recording) }).catch(() => {});
+    }
     updateStatusCircleAndDiagnostics();
     syncRecordControls();
   } catch {
@@ -1238,6 +1303,7 @@ async function startRecording(mode: "mic_only" | "mic_and_system") {
     const res = await api.startRecording({
       mode,
       language: selectedLanguage,
+      user_name: currentUserName || "Me",
       mic_device_index: selectedMicIndex >= 0 ? selectedMicIndex : undefined,
       system_device_index: selectedSystemIndex >= 0 ? selectedSystemIndex : undefined,
       mic_device_name: selectedMicName || undefined,
@@ -1283,6 +1349,10 @@ function enterRecording(modeLabel: string, resetPhrases: boolean, elapsedSeconds
   recordingTimerInterval = window.setInterval(updateTimerDisplay, 500);
   updateStatusCircleAndDiagnostics();
   syncRecordControls();
+
+  if (isTauriEnvironment()) {
+    invoke("update_tray_recording_state", { isRecording: true }).catch((err) => console.warn("[Tauri] update_tray_recording_state error:", err));
+  }
 }
 
 function leaveRecording() {
@@ -1307,6 +1377,14 @@ function leaveRecording() {
   btnStopRecording.removeAttribute("aria-busy");
   updateStatusCircleAndDiagnostics();
   syncRecordControls();
+
+  if (miniTimer) miniTimer.textContent = "00:00";
+  miniVadBars.forEach((bar) => { bar.className = "mini-vad-bar"; });
+
+  if (isTauriEnvironment()) {
+    invoke("hide_mini_window").catch((err) => console.warn("[Tauri] hide_mini_window error:", err));
+    invoke("update_tray_recording_state", { isRecording: false }).catch((err) => console.warn("[Tauri] update_tray_recording_state error:", err));
+  }
 }
 
 function updateTimerDisplay() {
@@ -1314,7 +1392,11 @@ function updateTimerDisplay() {
   const hrs = Math.floor(elapsed / 3600);
   const mins = Math.floor((elapsed % 3600) / 60);
   const secs = elapsed % 60;
+  const formatted = hrs > 0 ? `${pad(hrs)}:${pad(mins)}:${pad(secs)}` : `${pad(mins)}:${pad(secs)}`;
   activeTimer.textContent = `${pad(hrs)}:${pad(mins)}:${pad(secs)}`;
+  if (miniTimer) {
+    miniTimer.textContent = formatted;
+  }
 }
 
 async function stopRecording() {
@@ -1327,12 +1409,25 @@ async function stopRecording() {
   const stoppedSessionId = currentSessionId;
   targetHqSessionId = stoppedSessionId;
 
+  if (isTauriEnvironment()) {
+    invoke("show_main_window").catch(() => {});
+    invoke("hide_mini_window").catch(() => {});
+  }
+
   showHqModal("High-Quality Transcription");
 
   try {
-    await api.stopRecording();
+    const res = await api.stopRecording();
+    const finalSessionId = res?.session_id || stoppedSessionId;
+    targetHqSessionId = finalSessionId;
+
     leaveRecording();
     await refreshHistory();
+
+    if (finalSessionId) {
+      switchTab("history");
+      await selectSession(finalSessionId);
+    }
   } catch (error: any) {
     hideHqModal();
     targetHqSessionId = null;
@@ -1360,6 +1455,70 @@ async function stopRecording() {
 }
 
 // History & Playback
+function renderFilteredSessions() {
+  sessionsList.innerHTML = "";
+  if (allRecordings.length === 0) {
+    sessionsList.innerHTML = `<div style="padding: 20px; color: var(--text-muted); text-align: center; font-size: 14px;">No recordings yet.</div>`;
+    return;
+  }
+
+  const query = historySearchQuery.trim().toLowerCase();
+  const filtered = allRecordings.filter((s) => {
+    if (!query) return true;
+    if ((s.title || "").toLowerCase().includes(query)) return true;
+    if ((s.final_transcript || "").toLowerCase().includes(query)) return true;
+    if (s.phrases && s.phrases.length > 0) {
+      for (const p of s.phrases) {
+        if ((p.text || "").toLowerCase().includes(query)) return true;
+        if ((p.speaker || "").toLowerCase().includes(query)) return true;
+      }
+    }
+    return false;
+  });
+
+  if (filtered.length === 0) {
+    sessionsList.innerHTML = `<div style="padding: 20px; color: var(--text-muted); text-align: center; font-size: 14px;">No recordings match "${escapeHtml(historySearchQuery)}".</div>`;
+    return;
+  }
+
+  filtered.forEach((s) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `session-item ${activeViewingSession?.id === s.id ? "active" : ""}`;
+    item.dataset.id = s.id;
+
+    const statusLabel = s.status === "processing_hq"
+      ? "Transcribing"
+      : s.status === "hq_error"
+        ? "Needs retry"
+        : s.status === "interrupted"
+          ? "Interrupted"
+          : "";
+    const statusClass = s.status === "hq_error" ? "error" : s.status === "interrupted" ? "warn" : "";
+
+    const rawTitle = s.title || "Untitled Meeting";
+    let titleHtml = escapeHtml(rawTitle);
+    if (query && rawTitle.toLowerCase().includes(query)) {
+      const idx = rawTitle.toLowerCase().indexOf(query);
+      const before = escapeHtml(rawTitle.substring(0, idx));
+      const match = escapeHtml(rawTitle.substring(idx, idx + query.length));
+      const after = escapeHtml(rawTitle.substring(idx + query.length));
+      titleHtml = `${before}<mark class="search-match-highlight">${match}</mark>${after}`;
+    }
+
+    item.innerHTML = `
+      <div class="session-item-title">${titleHtml}</div>
+      <div class="session-item-sub">
+        <span>${formatDate(s.created_at)}</span>
+        <span>${statusLabel ? `<span class="session-item-status ${statusClass}">${statusLabel}</span>` : formatSeconds(s.duration || 0)}</span>
+      </div>
+    `;
+
+    item.addEventListener("click", () => selectSession(s.id));
+    sessionsList.appendChild(item);
+  });
+}
+
 async function refreshHistory() {
   const requestGeneration = ++historyRequestGeneration;
   sessionsList.setAttribute("aria-busy", "true");
@@ -1378,37 +1537,8 @@ async function refreshHistory() {
       }
     }
 
-    sessionsList.innerHTML = "";
-    if (sessions.length === 0) {
-      sessionsList.innerHTML = `<div style="padding: 20px; color: var(--text-muted); text-align: center; font-size: 14px;">No recordings yet.</div>`;
-      return;
-    }
-
-    sessions.forEach((s) => {
-      const item = document.createElement("button");
-      item.type = "button";
-      item.className = `session-item ${activeViewingSession?.id === s.id ? "active" : ""}`;
-      item.dataset.id = s.id;
-
-      const statusLabel = s.status === "processing_hq"
-        ? "Transcribing"
-        : s.status === "hq_error"
-          ? "Needs retry"
-          : s.status === "interrupted"
-            ? "Interrupted"
-            : "";
-      const statusClass = s.status === "hq_error" ? "error" : s.status === "interrupted" ? "warn" : "";
-      item.innerHTML = `
-        <div class="session-item-title">${escapeHtml(s.title || "Untitled Meeting")}</div>
-        <div class="session-item-sub">
-          <span>${formatDate(s.created_at)}</span>
-          <span>${statusLabel ? `<span class="session-item-status ${statusClass}">${statusLabel}</span>` : formatSeconds(s.duration || 0)}</span>
-        </div>
-      `;
-
-      item.addEventListener("click", () => selectSession(s.id));
-      sessionsList.appendChild(item);
-    });
+    allRecordings = sessions;
+    renderFilteredSessions();
   } catch (error: any) {
     if (requestGeneration === historyRequestGeneration) {
       if (backendOnline) {
@@ -1616,7 +1746,14 @@ function renderInteractivePhrases(session: RecordingSession) {
     row.innerHTML = `
       <button type="button" class="interactive-phrase-time" title="Jump to ${formatSeconds(phrase.start_time)} in audio">[${formatSeconds(phrase.start_time)}]</button>
       <div class="interactive-phrase-body">
-        <span class="interactive-phrase-speaker">${escapeHtml(speakerLabel)}:</span>
+        <div class="speaker-tag-wrap">
+          <span class="interactive-phrase-speaker" title="Click to rename speaker">${escapeHtml(speakerLabel)}:</span>
+          <button type="button" class="speaker-rename-btn" title="Rename speaker in this recording" aria-label="Rename speaker">
+            <svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M11.5 2.5a1.5 1.5 0 0 1 2 2L5 13H2.5v-2.5L11.5 2.5z" />
+            </svg>
+          </button>
+        </div>
         <div class="interactive-phrase-text" title="Double-click to edit phrase">${escapeHtml(phrase.text)}</div>
         <textarea class="phrase-text-input hidden" rows="1">${escapeHtml(phrase.text)}</textarea>
         <button type="button" class="phrase-edit-btn" title="Edit phrase" aria-label="Edit phrase">
@@ -1626,6 +1763,16 @@ function renderInteractivePhrases(session: RecordingSession) {
         </button>
       </div>
     `;
+
+    const spkWrap = row.querySelector(".speaker-tag-wrap");
+    const renameBtn = spkWrap?.querySelector(".speaker-rename-btn");
+    const spkText = spkWrap?.querySelector(".interactive-phrase-speaker");
+    const triggerRename = (e: Event) => {
+      e.stopPropagation();
+      openRenameSpeakerModal(speakerLabel);
+    };
+    renameBtn?.addEventListener("click", triggerRename);
+    spkText?.addEventListener("click", triggerRename);
 
     // Jump audio to start time
     const timeBtn = row.querySelector(".interactive-phrase-time") as HTMLElement;
@@ -1799,6 +1946,35 @@ function setupAudioPlayer() {
 
 // History Actions (Auto-save Title, Retranscribe, Copy, Export, Delete)
 function setupHistoryActions() {
+  historySearchInput?.addEventListener("input", () => {
+    historySearchQuery = historySearchInput.value || "";
+    if (historySearchQuery.trim().length > 0) {
+      btnClearSearch?.classList.remove("hidden");
+    } else {
+      btnClearSearch?.classList.add("hidden");
+    }
+    renderFilteredSessions();
+  });
+
+  btnClearSearch?.addEventListener("click", () => {
+    if (historySearchInput) historySearchInput.value = "";
+    historySearchQuery = "";
+    btnClearSearch?.classList.add("hidden");
+    renderFilteredSessions();
+    historySearchInput?.focus();
+  });
+
+  historySearchInput?.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (historySearchInput.value) {
+        historySearchInput.value = "";
+        historySearchQuery = "";
+        btnClearSearch?.classList.add("hidden");
+        renderFilteredSessions();
+      }
+    }
+  });
+
   btnRefreshHistory.addEventListener("click", async () => {
     btnRefreshHistory.disabled = true;
     btnRefreshHistory.setAttribute("aria-busy", "true");
@@ -2026,6 +2202,8 @@ function loadSavedSettings() {
     selectedMicIndex = Number.isInteger(saved.mic) ? saved.mic : -1;
     selectedSystemIndex = Number.isInteger(saved.system) ? saved.system : -1;
     selectedLanguage = typeof saved.language === "string" ? saved.language : "en";
+    currentUserName = typeof saved.user_name === "string" && saved.user_name.trim() ? saved.user_name.trim() : "Me";
+    if (inputUserName) inputUserName.value = currentUserName === "Me" ? "" : currentUserName;
     updateLanguageUI(selectedLanguage);
   } catch {
     localStorage.removeItem("sayso.settings");
@@ -2053,6 +2231,18 @@ function setupSettingsModal() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !settingsModal.classList.contains("hidden")) closeModal();
+  });
+
+  btnQuitApp?.addEventListener("click", async () => {
+    if (isTauriEnvironment()) {
+      try {
+        await invoke("quit_app");
+      } catch (err) {
+        console.warn("[Tauri] quit_app error:", err);
+      }
+    } else {
+      window.close();
+    }
   });
 
   sidebarLangSelect?.addEventListener("change", () => {
@@ -2115,6 +2305,11 @@ function setupSettingsModal() {
     const sysIdx = sysOpt?.dataset.index ? parseInt(sysOpt.dataset.index, 10) : -1;
     selectedSystemIndex = isNaN(sysIdx) ? -1 : sysIdx;
 
+    if (inputUserName) {
+      const typed = inputUserName.value.trim();
+      currentUserName = typed || "Me";
+    }
+
     void changeLanguage(selectLanguage.value, false);
 
     try {
@@ -2124,12 +2319,171 @@ function setupSettingsModal() {
       saved.mic = selectedMicIndex;
       saved.system = selectedSystemIndex;
       saved.language = selectedLanguage;
+      saved.user_name = currentUserName;
       localStorage.setItem("sayso.settings", JSON.stringify(saved));
     } catch {}
 
     showMessage("Settings saved.");
     closeModal();
   });
+}
+
+// Speaker Renaming Modal Functions
+function openRenameSpeakerModal(speakerName: string) {
+  if (!activeViewingSession) return;
+  targetRenameSpeaker = speakerName;
+  if (renameSpeakerTitle) renameSpeakerTitle.textContent = `Rename "${speakerName}"`;
+  if (renameSpeakerDesc) renameSpeakerDesc.textContent = `Rename "${speakerName}" across all phrases in this meeting.`;
+  if (inputSpeakerNewName) {
+    inputSpeakerNewName.value = speakerName;
+    renameSpeakerModal?.classList.remove("hidden");
+    window.setTimeout(() => {
+      inputSpeakerNewName.focus();
+      inputSpeakerNewName.select();
+    }, 50);
+  }
+}
+
+function closeRenameSpeakerModal() {
+  renameSpeakerModal?.classList.add("hidden");
+  targetRenameSpeaker = null;
+}
+
+async function confirmRenameSpeaker() {
+  if (!activeViewingSession || !targetRenameSpeaker || !inputSpeakerNewName) return;
+  const oldName = targetRenameSpeaker;
+  const newName = inputSpeakerNewName.value.trim();
+  if (!newName || newName === oldName) {
+    closeRenameSpeakerModal();
+    return;
+  }
+  try {
+    btnConfirmRenameSpeaker?.setAttribute("aria-busy", "true");
+    await api.renameSpeaker(activeViewingSession.id, oldName, newName);
+
+    // Update in-memory session phrases
+    if (activeViewingSession.phrases) {
+      activeViewingSession.phrases.forEach((p) => {
+        const cur = speakerLabelForPhrase(p);
+        if (cur === oldName || (p.speaker || "").trim() === oldName) {
+          p.speaker = newName;
+        }
+      });
+    }
+
+    // Update final_transcript
+    if (activeViewingSession.final_transcript) {
+      const escaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(`(^|\\n)${escaped}:`, "g");
+      activeViewingSession.final_transcript = activeViewingSession.final_transcript.replace(regex, `$1${newName}:`);
+      finalTranscriptText.value = activeViewingSession.final_transcript;
+    }
+
+    renderInteractivePhrases(activeViewingSession);
+    showMessage(`Speaker "${oldName}" renamed to "${newName}".`);
+  } catch (err: any) {
+    showMessage(`Could not rename speaker: ${err.message}`, true);
+  } finally {
+    btnConfirmRenameSpeaker?.removeAttribute("aria-busy");
+    closeRenameSpeakerModal();
+  }
+}
+
+function setupRenameSpeakerModal() {
+  btnCloseRenameSpeaker?.addEventListener("click", closeRenameSpeakerModal);
+  btnCancelRenameSpeaker?.addEventListener("click", closeRenameSpeakerModal);
+  btnConfirmRenameSpeaker?.addEventListener("click", () => void confirmRenameSpeaker());
+  inputSpeakerNewName?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void confirmRenameSpeaker();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeRenameSpeakerModal();
+    }
+  });
+  renameSpeakerModal?.addEventListener("click", (e) => {
+    if (e.target === renameSpeakerModal) closeRenameSpeakerModal();
+  });
+}
+
+// Mini Floating Widget Handlers
+function setupMiniWidget() {
+  if (isMiniMode && miniFloatingWidget) {
+    miniFloatingWidget.classList.remove("hidden");
+  }
+
+  // Make the mini floating widget draggable by mouse
+  const miniBody = document.getElementById("mini-widget-body") || miniFloatingWidget;
+  miniBody?.addEventListener("mousedown", async (e: MouseEvent) => {
+    if (e.button === 0 && !(e.target as HTMLElement).closest("button")) {
+      if (isTauriEnvironment()) {
+        try {
+          const appWindow = getCurrentWindow();
+          await appWindow.startDragging();
+        } catch (err) {
+          console.warn("[Tauri] startDragging error:", err);
+        }
+      }
+    }
+  });
+
+  btnMiniOpenApp?.addEventListener("click", async () => {
+    if (isTauriEnvironment()) {
+      try {
+        await invoke("show_main_window");
+        await invoke("hide_mini_window");
+      } catch (err) {
+        console.warn("[Tauri] show_main_window error:", err);
+      }
+    }
+  });
+
+  btnMiniStopRec?.addEventListener("click", async () => {
+    if (isTauriEnvironment()) {
+      try {
+        await invoke("show_main_window");
+        await invoke("hide_mini_window");
+        await emit("request_stop_recording");
+      } catch (err) {
+        console.warn("[Tauri] mini stop request error:", err);
+        await stopRecording();
+      }
+    } else {
+      await stopRecording();
+    }
+  });
+}
+
+// System Tray and App Event Listeners
+function setupTrayListener() {
+  if (isMiniMode) return;
+  if (isTauriEnvironment()) {
+    try {
+      listen("tray_toggle_record", async () => {
+        if (isRecording) {
+          await stopRecording();
+        } else if (modelCanRecord() && backendOnline && recordingOperation === "idle") {
+          await startRecording("mic_and_system");
+        } else {
+          if (isTauriEnvironment()) {
+            await invoke("show_main_window").catch(() => {});
+          }
+          if (!backendOnline) {
+            showMessage("Backend is offline. Reconnect before recording.", true);
+          } else if (!modelCanRecord()) {
+            showMessage("Download the transcription model before starting a recording.", true);
+          }
+        }
+      }).catch((err) => console.warn("[Tauri] tray listener error:", err));
+
+      listen("request_stop_recording", async () => {
+        await stopRecording();
+      }).catch((err) => console.warn("[Tauri] request_stop_recording error:", err));
+    } catch (err) {
+      console.warn("[Tauri] tray setup error:", err);
+    }
+  }
 }
 
 // Navigation Tabs
