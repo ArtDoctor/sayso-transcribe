@@ -858,6 +858,86 @@ def test_diarizer_segment_audio_by_turns():
     assert segments[2]["end_time"] == 11.0
 
 
+def test_env_loading_and_token_persistence(tmp_path, monkeypatch):
+    """Verify load_env_file loads variables and save_hf_token_to_env writes to file."""
+    import backend.config as config
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("HF_TOKEN=hf_dummy_12345678\nOTHER_VAR=test\n", encoding="utf-8")
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("OTHER_VAR", raising=False)
+
+    loaded = config.load_env_file(env_file)
+    assert loaded is True
+    assert os.environ.get("HF_TOKEN") == "hf_dummy_12345678"
+    assert config.get_hf_token() == "hf_dummy_12345678"
+    assert config.mask_hf_token("hf_dummy_12345678") == "hf_d...5678"
+
+    # Test saving token
+    monkeypatch.setattr(config, "BASE_DIR", tmp_path)
+    config.save_hf_token_to_env("hf_new_persisted_token")
+    assert os.environ.get("HF_TOKEN") == "hf_new_persisted_token"
+    assert "HF_TOKEN=hf_new_persisted_token" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+
+def test_token_api_endpoints(monkeypatch):
+    """Verify /api/settings/token GET and POST endpoints."""
+    client = TestClient(app)
+    import backend.config as config
+    import backend.main as main_module
+
+    monkeypatch.setattr(config, "save_hf_token_to_env", lambda tok: os.environ.update({"HF_TOKEN": tok}))
+    monkeypatch.setattr(main_module, "save_hf_token_to_env", lambda tok: os.environ.update({"HF_TOKEN": tok}))
+    monkeypatch.setenv("HF_TOKEN", "hf_api_test_tok_9999")
+
+    # GET
+    res = client.get("/api/settings/token")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["has_token"] is True
+    assert "hf_a" in data["token_masked"]
+
+    # POST
+    post_res = client.post("/api/settings/token", json={"token": "hf_updated_from_api_1111"})
+    assert post_res.status_code == 200
+    post_data = post_res.json()
+    assert post_data["saved"] is True
+    assert post_data["has_token"] is True
+    assert "hf_u" in post_data["token_masked"]
+
+    # Status endpoint includes has_hf_token
+    status_data = client.get("/api/status").json()
+    assert "has_hf_token" in status_data
+    assert status_data["has_hf_token"] is True
+
+
+def test_download_worker_gated_error_formatting(monkeypatch):
+    """Verify _download_worker formats 401 gated error into clear instructions."""
+    from backend.stt_engine import STTEngine
+    import huggingface_hub
+
+    engine = STTEngine(auto_load=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_TOKEN", raising=False)
+
+    def raise_401(*args, **kwargs):
+        raise RuntimeError("401 Client Error: Cannot access gated repo for url CohereLabs/cohere-transcribe-03-2026")
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", raise_401)
+
+    try:
+        engine._download_worker()
+        assert engine.status == "error"
+        assert "restricted" in engine.error_message
+        assert "https://huggingface.co/CohereLabs/cohere-transcribe-03-2026" in engine.error_message
+    finally:
+        engine.shutdown()
+
+
+
 
 
 

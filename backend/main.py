@@ -16,7 +16,15 @@ import soundfile as sf
 import sys
 import os
 import subprocess
-from .config import HOST, PORT, DEFAULT_LANGUAGE, LOGS_FILE
+from .config import (
+    HOST,
+    PORT,
+    DEFAULT_LANGUAGE,
+    LOGS_FILE,
+    get_hf_token,
+    mask_hf_token,
+    save_hf_token_to_env,
+)
 from .audio_devices import get_audio_devices
 from .storage import StorageManager
 from .stt_engine import STTEngine
@@ -341,6 +349,7 @@ def get_status():
         "device": device_val,
         "cuda_device_name": cuda_name,
         "ffmpeg_installed": is_ffmpeg_installed(),
+        "has_hf_token": bool(get_hf_token()),
     }
 
 
@@ -353,15 +362,46 @@ def get_ffmpeg_status():
     }
 
 
+@app.get("/api/settings/token")
+def get_settings_token():
+    token = get_hf_token()
+    return {
+        "has_token": bool(token),
+        "token_masked": mask_hf_token(token),
+    }
+
+
+class SetTokenRequest(BaseModel):
+    token: str
+
+
+@app.post("/api/settings/token")
+def set_settings_token(req: SetTokenRequest):
+    save_hf_token_to_env(req.token)
+    token = get_hf_token()
+    return {
+        "saved": True,
+        "has_token": bool(token),
+        "token_masked": mask_hf_token(token),
+    }
+
+
 @app.get("/api/devices")
 def get_devices(force_refresh: bool = False):
     """Returns dynamic Windows audio devices (cached with 3s TTL to protect WASAPI)."""
     return get_audio_devices(force_refresh=force_refresh)
 
 
+class DownloadModelRequest(BaseModel):
+    token: Optional[str] = None
+
+
 @app.post("/api/model/download")
-def download_model():
+def download_model(req: Optional[DownloadModelRequest] = None):
     """Initiate downloading Cohere model weights with real-time progress."""
+    if req and req.token and req.token.strip():
+        save_hf_token_to_env(req.token.strip())
+
     if stt_engine.status == "downloading":
         return {"status": "downloading", "detail": "Download already in progress"}
     if stt_engine.status == "ready":

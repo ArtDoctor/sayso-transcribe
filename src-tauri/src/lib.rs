@@ -313,11 +313,23 @@ fn is_window_maximized(window: tauri::Window) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    ensure_backend_running();
-
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            update_mini_window_visibility(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            ensure_backend_running();
+
+            if let Some(mini) = app.get_webview_window("mini") {
+                let _ = mini.set_skip_taskbar(true);
+            }
+
             let open_i = MenuItem::with_id(app, "open", "Open Sayso", true, None::<&str>)?;
             let record_i = MenuItem::with_id(app, "toggle_record", "Start recording", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Exit Sayso", true, None::<&str>)?;

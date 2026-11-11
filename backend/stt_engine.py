@@ -173,6 +173,7 @@ class STTEngine:
                 "speed_mb_s": 0.0,
                 "eta_s": 0,
             }
+            self.error_message = None
             self.set_status("downloading")
             if self.on_download_progress:
                 self.on_download_progress(self.download_progress)
@@ -191,7 +192,12 @@ class STTEngine:
 
             engine_self = self
 
-            hf_token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+            hf_token = (
+                os.environ.get("HF_TOKEN")
+                or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+                or os.environ.get("HUGGINGFACE_TOKEN")
+                or ""
+            ).strip() or None
             for fname in self.REQUIRED_FILES:
                 # If file is already cached, skip downloading
                 try:
@@ -257,7 +263,24 @@ class STTEngine:
 
         except Exception as e:
             logger.error(f"Download failed: {e}", exc_info=True)
-            self.set_status("error", str(e))
+            err_str = str(e)
+            if "401" in err_str or "gated" in err_str.lower() or "restricted" in err_str.lower():
+                if not hf_token:
+                    err_msg = (
+                        "Access to CohereLabs/cohere-transcribe-03-2026 is restricted. "
+                        "1) Accept the model license at https://huggingface.co/CohereLabs/cohere-transcribe-03-2026 "
+                        "2) Set your Hugging Face token in Settings or in a .env file (HF_TOKEN=hf_...)."
+                    )
+                else:
+                    err_msg = (
+                        "Authentication error (401) accessing CohereLabs/cohere-transcribe-03-2026. "
+                        "Your HF_TOKEN was sent, but Hugging Face rejected access. "
+                        "Please verify your account has accepted access at https://huggingface.co/CohereLabs/cohere-transcribe-03-2026 "
+                        "and that your token has Read permissions."
+                    )
+            else:
+                err_msg = err_str
+            self.set_status("error", err_msg)
 
     def ensure_model_loading(self):
         """Start exactly one background model loader and keep the phrase worker alive."""

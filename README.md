@@ -22,6 +22,16 @@ This theoretically should work with 6-8GB VRAM GPUs too. But lower GPUs probably
 - **Node.js 18+** & **npm**
 - **Rust toolchain** (for compiling the [Tauri](https://v2.tauri.app/) desktop binary)
 
+### Model Download & Hugging Face Authentication
+
+Sayso uses `CohereLabs/cohere-transcribe-03-2026`, which is a gated model on Hugging Face:
+1. Accept the model license on Hugging Face: [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026)
+2. Create a Hugging Face User Access Token (with Read permissions): [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
+3. Provide your token via any of these methods:
+   - Enter it in Sayso's **Settings** modal under **Hugging Face Token**,
+   - Copy `.env.example` to `.env` and set `HF_TOKEN=hf_...`, or
+   - Set the `HF_TOKEN` environment variable in your OS.
+
 ### Running the App
 
 Double-click `start.bat` or run:

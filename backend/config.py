@@ -1,5 +1,9 @@
 import os
+import logging
 from pathlib import Path
+from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # Base Paths
 # In a portable build BASE_DIR is the folder containing Sayso.exe, backend/, and
@@ -9,6 +13,94 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 RECORDINGS_DIR = BASE_DIR / "recordings"
 RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_FILE = BASE_DIR / "logs.txt"
+
+def load_env_file(env_path: Optional[Path] = None) -> bool:
+    """Load key-value pairs from .env into os.environ if not already set."""
+    candidates = [env_path] if env_path else [BASE_DIR / ".env", Path.cwd() / ".env"]
+    for path in candidates:
+        if path and path.is_file():
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(path, override=False)
+                return True
+            except ImportError:
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line and not line.startswith("#") and "=" in line:
+                                k, v = line.split("=", 1)
+                                k = k.strip()
+                                v = v.strip().strip('"').strip("'")
+                                if k and k not in os.environ:
+                                    os.environ[k] = v
+                    return True
+                except Exception:
+                    pass
+    return False
+
+# Load environment variables on startup
+load_env_file()
+
+def get_hf_token() -> Optional[str]:
+    """Return configured Hugging Face token from environment, or None."""
+    token = (
+        os.environ.get("HF_TOKEN")
+        or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+        or os.environ.get("HUGGINGFACE_TOKEN")
+        or ""
+    ).strip()
+    return token if token else None
+
+def mask_hf_token(token: Optional[str]) -> Optional[str]:
+    """Return a masked representation of the token (e.g. hf_...1234) for safe display."""
+    if not token:
+        return None
+    tok = token.strip()
+    if len(tok) <= 8:
+        return "****"
+    return f"{tok[:4]}...{tok[-4:]}"
+
+def save_hf_token_to_env(token: str) -> None:
+    """Save or update HF_TOKEN in BASE_DIR / .env and update os.environ."""
+    token = token.strip()
+    if token:
+        os.environ["HF_TOKEN"] = token
+    else:
+        os.environ.pop("HF_TOKEN", None)
+        os.environ.pop("HUGGING_FACE_HUB_TOKEN", None)
+        os.environ.pop("HUGGINGFACE_TOKEN", None)
+
+    env_path = BASE_DIR / ".env"
+    lines = []
+    found = False
+    if env_path.is_file():
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception:
+            lines = []
+
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("HF_TOKEN=") or stripped.startswith("HF_TOKEN "):
+            if token:
+                new_lines.append(f"HF_TOKEN={token}\n")
+            found = True
+        else:
+            new_lines.append(line)
+
+    if not found and token:
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines.append("\n")
+        new_lines.append(f"HF_TOKEN={token}\n")
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    except Exception as e:
+        logger.error(f"Failed to write token to {env_path}: {e}")
 
 MODEL_DIR = BASE_DIR / "models"
 HF_HOME = MODEL_DIR / "huggingface"

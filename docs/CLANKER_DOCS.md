@@ -67,7 +67,11 @@ sayso/ (transcriber)
   - The recording detail view features a **Folder** button (`#btn-open-folder`) calling `POST /api/recordings/{session_id}/open_folder`, which opens the session's folder directly in File Explorer.
 - **Asynchronous Loading & Model Download**:
   - `ensure_model_loading()` spawns a daemon loader thread (`_load_model_worker`). `status` progresses: `not_downloaded` -> `loading` -> `ready`.
-  - When downloading model files in `_download_worker`, `try_to_load_from_cache(COHERE_MODEL_ID, fname)` checks local cache (without `token`, as `try_to_load_from_cache` is strictly a local disk lookup). Remote download uses `hf_hub_download(..., token=hf_token)` which correctly passes authentication tokens from `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`.
+  - When downloading model files in `_download_worker`, `try_to_load_from_cache(COHERE_MODEL_ID, fname)` checks local cache (without `token`, as `try_to_load_from_cache` is strictly a local disk lookup). Remote download uses `hf_hub_download(..., token=hf_token)` which correctly passes authentication tokens from `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or `HUGGINGFACE_TOKEN`.
+  - **Environment Variables & Token Persistence**:
+    - `backend.config.load_env_file()` automatically loads `.env` key-value pairs from `BASE_DIR / ".env"` into `os.environ` on startup, with a built-in fallback parser if `python-dotenv` is absent. A template is provided at `.env.example`.
+    - `POST /api/settings/token` and `save_hf_token_to_env()` persist user tokens directly to `.env` and `os.environ`, allowing token configuration via the settings UI (`#input-hf-token`).
+    - If a 401 error or GatedRepoError occurs (since `CohereLabs/cohere-transcribe-03-2026` is restricted), `_download_worker` formats clear actionable guidance advising the user to accept the license agreement and configure `HF_TOKEN`.
 - **Chunked High-Quality Pass & WebSocket Progress**:
   - `split_audio_chunks_energy()` divides captured session audio into energy-bounded speech chunks.
   - `run_high_quality_pass()` reports progress via `on_hq_progress(processed, total, session_id)` callback.
@@ -139,6 +143,11 @@ sayso/ (transcriber)
 
 - The Rust/Tauri host is the owner of the Python backend on `127.0.0.1:48653`.
   `start.bat` and `start.ps1` deliberately do not start Python themselves.
+- **Single Instance Enforcement (`tauri-plugin-single-instance`)**:
+  - The application uses `tauri-plugin-single-instance` to prevent multiple concurrent instances from running.
+  - When the app is closed to tray and the user re-launches the `.exe` (or accidentally double-clicks it multiple times), the secondary process passes its focus command to the existing instance and terminates immediately.
+  - The primary instance unminimizes, shows, and focuses the main window.
+  - `ensure_backend_running()` runs inside `.setup()` so that secondary launching processes never attempt to connect to, spawn, or adopt the backend process, preventing duplicate tray icons and preventing secondary exits from shutting down the active backend.
 - All command invocations (`netstat`, `taskkill`, `python --version`) in the Tauri host
   use `silent_command` configured with Windows `CREATE_NO_WINDOW` (`0x08000000`)
   so process management and shutdown never produce flashing console windows.
@@ -220,6 +229,13 @@ npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 cmd /c build.bat --no-bundle
 ```
+
+## Python Environment Setup (Option B)
+
+- **Supported Python**: Python 3.10 through 3.13 on PATH.
+- **Dependencies**: All packages listed in `requirements-portable.txt` plus test packages (`pytest`, `httpx`).
+- **GPU Acceleration**: NVIDIA GPU acceleration via `torch==2.11.0+cu126` and `torchaudio==2.11.0+cu126` (via extra index `https://download.pytorch.org/whl/cu126`). On launch, `_detect_torch_device()` automatically detects CUDA capability.
+- **Native Host Interaction**: The Tauri host discovers Python via `local_python(&root)` (embedded `python/` folder) and falls back to system `python` on `PATH`. It spawns `python -m backend.main` using `CREATE_NO_WINDOW`.
 
 ## Portable Windows Packaging
 

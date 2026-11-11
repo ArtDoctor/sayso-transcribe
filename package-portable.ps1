@@ -210,5 +210,9 @@ if (-not $NoModel) {
 }
 
 Write-PortableFiles
+$envExample = Join-Path $ScriptRoot ".env.example"
+if (Test-Path -LiteralPath $envExample) {
+    Copy-Item -LiteralPath $envExample -Destination (Join-Path $AppDir ".env.example") -Force
+}
 Write-Host "Portable package created: $AppDir" -ForegroundColor Green
 Write-Host "Run $AppDir\Sayso.exe or $AppDir\start.bat" -ForegroundColor Green

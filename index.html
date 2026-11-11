@@ -529,6 +529,28 @@
               </div>
             </div>
 
+            <div class="setting-group">
+              <label for="input-hf-token">Hugging Face Token</label>
+              <div class="input-with-action">
+                <input
+                  type="password"
+                  id="input-hf-token"
+                  class="minimal-input"
+                  placeholder="hf_..."
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label="Hugging Face Token"
+                />
+                <button id="btn-toggle-hf-token" type="button" class="btn btn-sm" aria-label="Toggle token visibility">Show</button>
+              </div>
+              <div class="text-sub" style="font-size: 12px; margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap;">
+                <span>Required for model download.</span>
+                <a href="https://huggingface.co/CohereLabs/cohere-transcribe-03-2026" target="_blank" rel="noreferrer" class="link-subtle">Accept agreement</a>
+                <span>&bull;</span>
+                <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer" class="link-subtle">Get token</a>
+              </div>
+            </div>
+
             <hr class="divider" />
 
             <div class="setting-group">

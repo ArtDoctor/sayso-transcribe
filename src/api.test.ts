@@ -81,6 +81,33 @@ describe("ApiClient", () => {
     expect(typeof client.retranscribeRecording).toBe("function");
     expect(typeof client.getFfmpegStatus).toBe("function");
     expect(typeof client.uploadAudio).toBe("function");
+    expect(typeof client.getHfToken).toBe("function");
+    expect(typeof client.setHfToken).toBe("function");
+  });
+
+  it("calls getHfToken and setHfToken endpoints", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ has_token: true, token_masked: "hf_...1234" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ saved: true, has_token: true, token_masked: "hf_...9999" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient();
+    const info = await client.getHfToken();
+    expect(info.has_token).toBe(true);
+    expect(info.token_masked).toBe("hf_...1234");
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/settings/token");
+
+    const saved = await client.setHfToken("hf_new_token_9999");
+    expect(saved.saved).toBe(true);
+    expect(saved.token_masked).toBe("hf_...9999");
+    expect(fetchMock.mock.calls[1][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ token: "hf_new_token_9999" });
   });
 
   it("calls getFfmpegStatus endpoint", async () => {

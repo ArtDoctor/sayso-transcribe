@@ -174,6 +174,8 @@ const selectMicDevice = document.getElementById("select-mic-device") as HTMLSele
 const selectSystemDevice = document.getElementById("select-system-device") as HTMLSelectElement;
 const selectLanguage = document.getElementById("select-language") as HTMLSelectElement;
 const settingsModelStatusText = document.getElementById("settings-model-status-text") as HTMLElement;
+const inputHfToken = document.getElementById("input-hf-token") as HTMLInputElement | null;
+const btnToggleHfToken = document.getElementById("btn-toggle-hf-token") as HTMLButtonElement | null;
 
 // State Variables
 let currentUserName: string = "Me";
@@ -2221,6 +2223,18 @@ function setupSettingsModal() {
     previouslyFocused = document.activeElement as HTMLElement;
     settingsModal.classList.remove("hidden");
     void refreshDevices();
+    void (async () => {
+      try {
+        const tokenRes = await api.getHfToken();
+        if (inputHfToken && !inputHfToken.value) {
+          if (tokenRes.has_token && tokenRes.token_masked) {
+            inputHfToken.placeholder = `Configured (${tokenRes.token_masked})`;
+          } else {
+            inputHfToken.placeholder = "hf_...";
+          }
+        }
+      } catch {}
+    })();
     window.setTimeout(() => btnCloseSettings.focus(), 0);
   };
 
@@ -2231,6 +2245,29 @@ function setupSettingsModal() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !settingsModal.classList.contains("hidden")) closeModal();
+  });
+
+  if (btnToggleHfToken && inputHfToken) {
+    btnToggleHfToken.addEventListener("click", () => {
+      const isPassword = inputHfToken.type === "password";
+      inputHfToken.type = isPassword ? "text" : "password";
+      btnToggleHfToken.textContent = isPassword ? "Hide" : "Show";
+    });
+  }
+
+  // Open external links in user's default OS browser when running under Tauri
+  document.addEventListener("click", (event) => {
+    const anchor = (event.target as HTMLElement)?.closest("a");
+    if (anchor && anchor.href && (anchor.href.startsWith("http://") || anchor.href.startsWith("https://"))) {
+      if (isTauriEnvironment()) {
+        event.preventDefault();
+        void import("@tauri-apps/plugin-opener")
+          .then(({ openUrl }) => openUrl(anchor.href))
+          .catch(() => {
+            window.open(anchor.href, "_blank");
+          });
+      }
+    }
   });
 
   btnQuitApp?.addEventListener("click", async () => {
@@ -2322,6 +2359,19 @@ function setupSettingsModal() {
       saved.user_name = currentUserName;
       localStorage.setItem("sayso.settings", JSON.stringify(saved));
     } catch {}
+
+    if (inputHfToken && inputHfToken.value.trim()) {
+      const tokenVal = inputHfToken.value.trim();
+      void (async () => {
+        try {
+          await api.setHfToken(tokenVal);
+          inputHfToken.value = "";
+          inputHfToken.placeholder = `Configured (${tokenVal.slice(0, 4)}...${tokenVal.slice(-4)})`;
+        } catch (err: any) {
+          showMessage(`Could not save token: ${err.message}`, true);
+        }
+      })();
+    }
 
     showMessage("Settings saved.");
     closeModal();

@@ -2302,3 +2302,23 @@ body.mini-window-mode #mini-floating-widget {
 }
 
 
+
+.input-with-action {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.input-with-action .minimal-input {
+  flex: 1;
+}
+
+.link-subtle {
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link-subtle:hover {
+  color: var(--text-primary);
+}

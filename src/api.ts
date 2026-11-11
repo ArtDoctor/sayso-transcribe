@@ -38,6 +38,7 @@ export interface BackendStatus {
   device?: string;
   cuda_device_name?: string | null;
   ffmpeg_installed?: boolean;
+  has_hf_token?: boolean;
 }
 
 export interface Phrase {
@@ -279,8 +280,24 @@ export class ApiClient {
     return this.json("/api/model/preload", { method: "POST" });
   }
 
-  async downloadModel(): Promise<any> {
-    return this.json("/api/model/download", { method: "POST" });
+  async downloadModel(token?: string): Promise<any> {
+    return this.json("/api/model/download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: token ? JSON.stringify({ token }) : undefined,
+    });
+  }
+
+  async getHfToken(): Promise<{ has_token: boolean; token_masked: string | null }> {
+    return this.json("/api/settings/token");
+  }
+
+  async setHfToken(token: string): Promise<{ saved: boolean; has_token: boolean; token_masked: string | null }> {
+    return this.json("/api/settings/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
   }
 
   async unloadModel(): Promise<any> {
